@@ -64,7 +64,7 @@ pub fn default_accent() -> String {
 }
 
 pub enum Action {
-    View,
+    View { panes: bool },
     Say { agent: String, text: String },
     Ask { agent: String, text: String, fresh: bool },
 }
@@ -77,6 +77,7 @@ pub struct Invocation {
 const USAGE: &str = "wtv — worktree viewer
 
   wtv                              open the viewer
+  wtv --panes                      open the viewer and the agent panes beside it
   wtv say <claude|codex> <text>    send a message to that agent's pane
   wtv ask <claude|codex> <text>    ask that agent and print its reply
                                    (--new starts a fresh discussion)
@@ -87,12 +88,14 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
     let mut args = args.skip(1).peekable();
     let mut config = None;
     let mut fresh = false;
+    let mut panes = false;
     let mut verb = None;
     let mut rest: Vec<String> = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => config = Some(PathBuf::from(args.next().ok_or("--config requires a path")?)),
             "--new" => fresh = true,
+            "--panes" => panes = true,
             "-h" | "--help" => return Err(USAGE.to_string()),
             "say" | "ask" if verb.is_none() => verb = Some(arg),
             _ if verb.is_some() => rest.push(arg),
@@ -103,7 +106,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/wtv/config.toml")
     });
     let command = match verb.as_deref() {
-        None => Action::View,
+        None => Action::View { panes },
         Some(verb) => {
             let mut rest = rest.into_iter();
             let agent = rest.next().ok_or_else(|| format!("{verb} needs an agent: claude or codex\n\n{USAGE}"))?;
@@ -605,21 +608,13 @@ pub fn sync_window(worktree: &Path, claude: &str, codex: &str, create_missing: b
     }
     let mut started = Vec::new();
     if create_missing {
-        for (name, missing, command) in [
-            ("claude", !has_claude, &resume_claude),
-            ("codex", !has_codex, &resume_codex),
-        ] {
-            if !missing {
-                continue;
-            }
-            let program = if name == "claude" { claude } else { codex };
-            if !available(program) {
-                continue;
-            }
+        let mut top = (last != own).then(|| last.clone());
+        if !has_claude && available(claude) {
             let vertical = last != own;
-            if let Some(pane) = split_pane(&last, vertical, worktree, None, Some(command)) {
-                last = pane;
-                started.push(name.to_string());
+            if let Some(pane) = split_pane(&last, vertical, worktree, None, Some(&resume_claude)) {
+                last = pane.clone();
+                top = Some(pane);
+                started.push("claude".to_string());
             }
         }
         if shell.is_none() {
@@ -627,6 +622,13 @@ pub fn sync_window(worktree: &Path, claude: &str, codex: &str, create_missing: b
             shell = split_pane(&last, vertical, worktree, Some(8), None);
             if shell.is_some() {
                 started.push("shell".to_string());
+            }
+        }
+        if !has_codex && available(codex) {
+            let target = top.clone().unwrap_or(last);
+            let vertical = target != own;
+            if split_pane(&target, vertical, worktree, None, Some(&resume_codex)).is_some() {
+                started.push("codex".to_string());
             }
         }
     }
@@ -730,7 +732,9 @@ mod tests {
     fn parses_config_flag() {
         let invocation = parse_args(args(&["--config", "/tmp/x"]).into_iter()).unwrap();
         assert_eq!(invocation.config, PathBuf::from("/tmp/x"));
-        assert!(matches!(invocation.command, Action::View));
+        assert!(matches!(invocation.command, Action::View { panes: false }));
+        let with_panes = parse_args(args(&["--panes"]).into_iter()).unwrap();
+        assert!(matches!(with_panes.command, Action::View { panes: true }));
     }
 
     #[test]

@@ -960,7 +960,13 @@ fn start() -> Result<(), String> {
     let invocation = core::parse_args(std::env::args())?;
     let config = core::load_config(Path::new(&invocation.config))?;
     match invocation.command {
-        core::Action::View => App::new(config).and_then(|app| run(app).map_err(|e| e.to_string())),
+        core::Action::View { panes } => {
+            let mut app = App::new(config)?;
+            if panes {
+                app.sync_agents();
+            }
+            run(app).map_err(|e| e.to_string())
+        }
         core::Action::Say { agent, text } => {
             println!("{}", relay::say(&config, &agent, &text)?);
             Ok(())

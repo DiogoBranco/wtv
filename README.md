@@ -61,13 +61,29 @@ That installs `wtv` (the terminal UI) and `wtv-web` (an optional browser UI).
 
 ## Run
 
-From inside any git repository:
+Open a terminal, go to a repo or worktree, and run:
+
+```sh
+wtv-up
+```
+
+That is the whole cold start. It creates the tmux session, builds the layout —
+viewer left, claude and codex stacked on the right, a shell at the bottom — and
+attaches you to it. Run it again later and it attaches to the same session.
+
+Add worktree names to open one window each:
+
+```sh
+wtv-up dev-1579-multipass-doc-enrichment dev-1577-eval-search-latency-cost
+```
+
+Just the viewer, no panes:
 
 ```sh
 wtv
 ```
 
-On the first run it writes `~/.config/wtv/config.toml` pointing at the repository
+On the first run wtv writes `~/.config/wtv/config.toml` pointing at the repository
 you are standing in, and opens on the worktree of your current directory.
 
 To watch several repos, list them:
