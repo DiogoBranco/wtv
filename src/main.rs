@@ -98,6 +98,7 @@ struct App {
     popup_index: usize,
     prompt: Option<Prompt>,
     new_branch: Option<String>,
+    shell_pane: Option<String>,
     watcher: Option<RecommendedWatcher>,
     watch_rx: Option<Receiver<()>>,
     dirty_since: Option<Instant>,
@@ -281,7 +282,7 @@ impl App {
             base: None, branches: Vec::new(), paths: Vec::new(), changed: Vec::new(), nodes: Vec::new(),
             open_dirs: HashSet::new(), selected: 0, active_path: None, content: Vec::new(), highlighted: Vec::new(), old_highlighted: Vec::new(), new_highlighted: Vec::new(),
             diff_rows: Vec::new(), expanded: HashSet::new(), scroll: 0, cursor: 0, anchor: None, visual: false, select_side: Side::New, view_height: 0, view_width: 0, row_map: Vec::new(), rendered_rows: 0, sidebar_width: 34, split_pct: 50, dragging: None, horizontal: 0, accent,
-            status: String::new(), popup: None, popup_index: 0, prompt: None, new_branch: None, watcher: None,
+            status: String::new(), popup: None, popup_index: 0, prompt: None, new_branch: None, shell_pane: None, watcher: None,
             watch_rx: None, dirty_since: None, syntax_set: SyntaxSet::load_defaults_newlines(),
             theme: wtv_theme(), quit: false,
         };
@@ -299,8 +300,9 @@ impl App {
     fn select_worktree(&mut self, retarget: bool) -> Result<(), String> {
         let wt = self.worktree_path();
         if retarget {
-            if let Err(e) = core::retarget_window(&wt, &self.config.claude, &self.config.codex) {
-                self.status = e;
+            match core::retarget_window(&wt, &self.config.claude, &self.config.codex) {
+                Ok(shell) => self.shell_pane = shell,
+                Err(e) => self.status = e,
             }
         }
         self.branches = core::branch_refs(&wt);
@@ -524,10 +526,19 @@ impl App {
                         self.worktree_index = wi;
                     }
                 }
-                match self.select_worktree(true) {
-                    Ok(()) => self.status = format!("created {branch}"),
-                    Err(e) => self.status = e,
+                if let Err(e) = self.select_worktree(true) {
+                    self.status = e;
+                    return;
                 }
+                let setup = core::post_create_commands(&repo);
+                self.status = match (setup.is_empty(), self.shell_pane.clone()) {
+                    (true, _) => format!("created {branch}"),
+                    (false, None) => format!("created {branch} · run setup yourself, no shell pane found"),
+                    (false, Some(pane)) => match core::send_to_pane(&pane, &setup.join(" && ")) {
+                        Ok(()) => format!("created {branch} · setup running in the shell pane"),
+                        Err(e) => format!("created {branch} · {e}"),
+                    },
+                };
             }
             Err(e) => self.status = e,
         }

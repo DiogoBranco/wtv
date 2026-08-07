@@ -399,7 +399,54 @@ pub fn inject(worktree: &Path, agent: &str, file: &str, lines: Option<&str>, bas
     Command::new("tmux").args(["send-keys", "-t", &pane, "Enter"]).status().map(|s| s.success()).unwrap_or(false).then_some(()).ok_or_else(|| "injection failed".into())
 }
 
-pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<(), String> {
+fn parse_post_create(config: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut inside = false;
+    for line in config.lines() {
+        if line.starts_with("post_create:") {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if !line.trim().is_empty() && !line.starts_with(char::is_whitespace) {
+            break;
+        }
+        if let Some(item) = line.trim_start().strip_prefix("- ") {
+            let item = item.trim().trim_matches(['"', '\'']);
+            if !item.is_empty() && item != "<global>" {
+                commands.push(item.to_string());
+            }
+        }
+    }
+    commands
+}
+
+pub fn post_create_commands(repo: &Path) -> Vec<String> {
+    parse_post_create(&std::fs::read_to_string(repo.join(".workmux.yaml")).unwrap_or_default())
+}
+
+pub fn send_to_pane(pane: &str, text: &str) -> Result<(), String> {
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", pane, "-l", "--", text])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return Err("could not reach the shell pane".into());
+    }
+    std::thread::sleep(Duration::from_millis(80));
+    Command::new("tmux")
+        .args(["send-keys", "-t", pane, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+        .then_some(())
+        .ok_or_else(|| "could not reach the shell pane".into())
+}
+
+pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<Option<String>, String> {
     let own = std::env::var("TMUX_PANE").map_err(|_| "not inside tmux")?;
     let output = Command::new("tmux")
         .args(["list-panes", "-t", &own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
@@ -408,6 +455,7 @@ pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<(),
     if !output.status.success() {
         return Err("tmux failed".into());
     }
+    let mut shell = None;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 3 || fields[0] == own {
@@ -422,6 +470,7 @@ pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<(),
         } else if commands.contains("codex") {
             Some(format!("{codex} resume --last || exec {codex}"))
         } else if matches!(front.as_str(), "bash" | "zsh" | "sh" | "fish") && commands.len() == 1 {
+            shell = Some(fields[0].to_string());
             None
         } else {
             continue;
@@ -433,7 +482,7 @@ pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<(),
         }
         let _ = command.status();
     }
-    Ok(())
+    Ok(shell)
 }
 
 fn configured_worktree_dir(config: &str) -> Option<String> {
@@ -535,6 +584,14 @@ mod tests {
     fn rejects_positional_config() {
         let args = vec!["wtv".into(), "/tmp/x".into()];
         assert!(config_path(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn reads_post_create_hooks() {
+        let config = "worktree_dir: .worktrees\n\npost_create:\n  - uv venv .venv && make prepare_env\n  - \"<global>\"\n\nfiles:\n  symlink:\n    - .claude/settings.json\n";
+        assert_eq!(parse_post_create(config), vec!["uv venv .venv && make prepare_env"]);
+        assert!(parse_post_create("main_branch: main\n").is_empty());
+        assert!(parse_post_create("post_create: []\n").is_empty());
     }
 
     #[test]

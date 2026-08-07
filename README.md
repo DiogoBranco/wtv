@@ -85,6 +85,7 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | --- | --- |
 | `w` | worktree picker (switching also retargets the agent panes) |
 | `n` | new worktree — type a branch name, it is created from your default branch |
+| | (any `post_create` hooks in `.workmux.yaml` run in the shell pane) |
 | `d` | switch between Browse and Diff |
 | `b` | pick the diff base (for stacked PRs) |
 | `j` `k` / arrows | move; `Tab` switches between tree and code |
@@ -120,6 +121,11 @@ panes:
 Then `workmux add my-branch` (or `workmux open <existing>`) gives you a window per
 worktree with that layout. `scripts/wtv-up` is a small helper that creates the tmux
 session and opens the worktrees you name.
+
+`n` inside wtv is the in-place alternative: it creates the worktree, switches the
+current window to it, and runs the repo's `post_create` hooks in the shell pane, so
+a new tree is provisioned the same way workmux would provision it. Use `workmux add`
+when you want a separate window per branch.
 
 `scripts/wtv-stack` adds zellij-style pane stacking, if you bind it:
 
