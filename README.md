@@ -155,6 +155,46 @@ bind -n M-m run-shell 'wtv-stack'
 bind -n M-e run-shell 'wtv-stack --even'
 ```
 
+## Agent to agent
+
+The two agents can talk to each other, in two shapes, and you choose per message:
+
+```sh
+wtv say codex "review the auth change I just pushed"   # into its live pane, no reply
+wtv ask codex "does this caching plan hold up?"        # prints its reply back
+```
+
+`say` types into the running pane — that agent answers with its full session context
+and you read it there. `ask` talks to a wtv-owned side session instead, so the reply
+comes back as clean output the caller can act on, and your live conversations are
+never written to by two processes at once.
+
+`ask` is what makes an argument possible: claude states its case, gets codex's
+counter as command output, and pushes back. The whole exchange shows up in the
+caller's pane as it happens, so you can interrupt whenever you have heard enough.
+`--new` starts a fresh discussion instead of continuing the last one.
+
+Messages carry their origin (`[from claude] …`), taken from the calling pane rather
+than the sender's word for it. Three things keep this from running away: a message
+that is already tagged cannot be forwarded again, exchanges are rate limited per
+worktree, and you can always interrupt the caller.
+
+Every `ask` discussion is written to a markdown transcript outside the worktree, at
+`~/.local/share/wtv/<worktree>/<date>-<topic>.md`, and the path is printed with each
+reply — so afterwards you can tell either agent "re-read the argument and implement
+the option that won".
+
+To let them use it, add one line to each agent's instructions:
+
+```md
+To get a second opinion from the other agent in this worktree, run
+`wtv ask codex "<question>"` (or `wtv ask claude`). It prints the reply.
+Use `wtv say <agent> "<message>"` to send something without waiting.
+```
+
+Claude Code will ask permission for the command until you allowlist `wtv` in
+`~/.claude/settings.json`.
+
 ## How the agent link works
 
 wtv finds the pane in its own tmux window whose process is Claude Code or Codex

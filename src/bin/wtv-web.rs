@@ -143,8 +143,20 @@ async fn set_config(State(app): State<Arc<App>>, Json(body): Json<AccentBody>) -
 
 #[tokio::main]
 async fn main() {
-    let path = core::config_path(std::env::args()).unwrap_or_else(|e| panic!("{e}"));
-    let config = core::load_config(&path).unwrap_or_else(|e| panic!("{e}"));
+    let path = match core::parse_args(std::env::args()) {
+        Ok(invocation) => invocation.config,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    let config = match core::load_config(&path) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
     let app = Arc::new(App { config: RwLock::new(config), config_path: path });
     let router = Router::new()
         .route("/api/worktrees", get(worktrees))

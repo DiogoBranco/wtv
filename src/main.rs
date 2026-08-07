@@ -19,6 +19,7 @@ use syntect::highlighting::{Color as SyntectColor, FontStyle, ScopeSelectors, St
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use wtv::core::{self, ChangedFile, Config, RepoWorktrees};
+use wtv::relay;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode { Browse, Diff }
@@ -955,21 +956,26 @@ fn run(mut app: App) -> io::Result<()> {
     result
 }
 
+fn start() -> Result<(), String> {
+    let invocation = core::parse_args(std::env::args())?;
+    let config = core::load_config(Path::new(&invocation.config))?;
+    match invocation.command {
+        core::Action::View => App::new(config).and_then(|app| run(app).map_err(|e| e.to_string())),
+        core::Action::Say { agent, text } => {
+            println!("{}", relay::say(&config, &agent, &text)?);
+            Ok(())
+        }
+        core::Action::Ask { agent, text, fresh } => {
+            println!("{}", relay::ask(&config, &agent, &text, fresh)?);
+            Ok(())
+        }
+    }
+}
+
 fn main() {
-    let start = core::config_path(std::env::args())
-        .and_then(|path| core::load_config(Path::new(&path)))
-        .and_then(App::new);
-    match start {
-        Ok(app) => {
-            if let Err(e) = run(app) {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
+    if let Err(e) = start() {
+        eprintln!("{e}");
+        std::process::exit(1);
     }
 }
 

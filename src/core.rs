@@ -63,20 +63,62 @@ pub fn default_accent() -> String {
     "#98c379".to_string()
 }
 
-pub fn config_path(args: impl Iterator<Item = String>) -> Result<PathBuf, String> {
-    let mut args = args.skip(1);
-    let mut path = None;
+pub enum Action {
+    View,
+    Say { agent: String, text: String },
+    Ask { agent: String, text: String, fresh: bool },
+}
+
+pub struct Invocation {
+    pub config: PathBuf,
+    pub command: Action,
+}
+
+const USAGE: &str = "wtv — worktree viewer
+
+  wtv                              open the viewer
+  wtv say <claude|codex> <text>    send a message to that agent's pane
+  wtv ask <claude|codex> <text>    ask that agent and print its reply
+                                   (--new starts a fresh discussion)
+
+  --config <path>                  config file (default ~/.config/wtv/config.toml)";
+
+pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, String> {
+    let mut args = args.skip(1).peekable();
+    let mut config = None;
+    let mut fresh = false;
+    let mut verb = None;
+    let mut rest: Vec<String> = Vec::new();
     while let Some(arg) = args.next() {
-        if arg == "--config" {
-            path = Some(PathBuf::from(args.next().ok_or("--config requires a path")?));
-        } else {
-            return Err(format!("unknown argument: {arg}"));
+        match arg.as_str() {
+            "--config" => config = Some(PathBuf::from(args.next().ok_or("--config requires a path")?)),
+            "--new" => fresh = true,
+            "-h" | "--help" => return Err(USAGE.to_string()),
+            "say" | "ask" if verb.is_none() => verb = Some(arg),
+            _ if verb.is_some() => rest.push(arg),
+            _ => return Err(format!("unknown argument: {arg}\n\n{USAGE}")),
         }
     }
-    Ok(path.unwrap_or_else(|| {
-        PathBuf::from(std::env::var("HOME").expect("HOME not set"))
-            .join(".config/wtv/config.toml")
-    }))
+    let config = config.unwrap_or_else(|| {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/wtv/config.toml")
+    });
+    let command = match verb.as_deref() {
+        None => Action::View,
+        Some(verb) => {
+            let mut rest = rest.into_iter();
+            let agent = rest.next().ok_or_else(|| format!("{verb} needs an agent: claude or codex\n\n{USAGE}"))?;
+            let text = rest.collect::<Vec<_>>().join(" ");
+            if text.trim().is_empty() {
+                return Err(format!("{verb} needs a message\n\n{USAGE}"));
+            }
+            if verb == "say" {
+                Action::Say { agent, text }
+            } else {
+                Action::Ask { agent, text, fresh }
+            }
+        }
+    };
+    Ok(Invocation { config, command })
 }
 
 pub fn load_config(path: &Path) -> Result<Config, String> {
@@ -380,6 +422,40 @@ fn find_pane(worktree: &Path, agent: &str) -> Option<String> {
     None
 }
 
+pub fn worktree_root() -> Option<PathBuf> {
+    let dir = std::env::current_dir().ok()?;
+    let top = git(&dir, &["rev-parse", "--show-toplevel"])?;
+    std::fs::canonicalize(top.trim()).ok()
+}
+
+pub fn message_pane(worktree: &Path, agent: &str, text: &str) -> Result<(), String> {
+    let pane = find_pane(worktree, agent)
+        .ok_or_else(|| format!("no {agent} pane found for this worktree"))?;
+    send_to_pane(&pane, text)
+}
+
+pub fn calling_agent() -> String {
+    let Ok(own) = std::env::var("TMUX_PANE") else { return "you".to_string() };
+    let Some(out) = Command::new("tmux")
+        .args(["display-message", "-p", "-t", &own, "#{pane_pid}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    else {
+        return "you".to_string();
+    };
+    let Ok(pid) = String::from_utf8_lossy(&out.stdout).trim().parse() else {
+        return "you".to_string();
+    };
+    let commands = pane_commands(pid);
+    for agent in ["claude", "codex"] {
+        if commands.contains(agent) {
+            return agent.to_string();
+        }
+    }
+    "you".to_string()
+}
+
 pub fn inject(worktree: &Path, agent: &str, file: &str, lines: Option<&str>, base: Option<&str>, question: &str) -> Result<(), String> {
     if !matches!(agent, "claude" | "codex") || !valid_path(file) {
         return Err("invalid request".into());
@@ -646,16 +722,42 @@ pub fn watch(worktree: &Path, tx: Sender<()>) -> Result<RecommendedWatcher, noti
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_config_flag() {
-        let args = vec!["wtv".into(), "--config".into(), "/tmp/x".into()];
-        assert_eq!(config_path(args.into_iter()).unwrap(), PathBuf::from("/tmp/x"));
+    fn args(values: &[&str]) -> Vec<String> {
+        std::iter::once("wtv").chain(values.iter().copied()).map(str::to_string).collect()
     }
 
     #[test]
-    fn rejects_positional_config() {
-        let args = vec!["wtv".into(), "/tmp/x".into()];
-        assert!(config_path(args.into_iter()).is_err());
+    fn parses_config_flag() {
+        let invocation = parse_args(args(&["--config", "/tmp/x"]).into_iter()).unwrap();
+        assert_eq!(invocation.config, PathBuf::from("/tmp/x"));
+        assert!(matches!(invocation.command, Action::View));
+    }
+
+    #[test]
+    fn parses_say_and_ask_with_multi_word_text() {
+        let say = parse_args(args(&["say", "codex", "review", "the", "auth", "change"]).into_iter()).unwrap();
+        match say.command {
+            Action::Say { agent, text } => {
+                assert_eq!(agent, "codex");
+                assert_eq!(text, "review the auth change");
+            }
+            _ => panic!("expected say"),
+        }
+        let ask = parse_args(args(&["ask", "--new", "claude", "why", "this"]).into_iter()).unwrap();
+        match ask.command {
+            Action::Ask { agent, text, fresh } => {
+                assert_eq!((agent.as_str(), text.as_str(), fresh), ("claude", "why this", true));
+            }
+            _ => panic!("expected ask"),
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_unknown_arguments() {
+        assert!(parse_args(args(&["/tmp/x"]).into_iter()).is_err());
+        assert!(parse_args(args(&["say"]).into_iter()).is_err());
+        assert!(parse_args(args(&["ask", "codex"]).into_iter()).is_err());
+        assert!(parse_args(args(&["--config"]).into_iter()).is_err());
     }
 
     #[test]
