@@ -1,0 +1,19 @@
+[package]
+name = "wtv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+libc = "0.2"
+notify = "8"
+tower-http = { version = "0.6", features = ["fs"] }
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+syntect = "5.3.0"
+imara-diff = "0.2.0"
+base64 = "0.23.1"

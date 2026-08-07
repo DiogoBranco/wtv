@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+active=$(tmux display -p '#{pane_id}')
+left=$(tmux display -p '#{pane_left}')
+mapfile -t panes < <(tmux list-panes -F '#{pane_id} #{pane_left}' | awk -v l="$left" '$2 == l { print $1 }')
+[ "${#panes[@]}" -le 1 ] && exit 0
+
+if [ "${1:-}" = "--even" ]; then
+  height=$(( $(tmux display -p '#{window_height}') / ${#panes[@]} ))
+  for pane in "${panes[@]}"; do
+    tmux resize-pane -t "$pane" -y "$height"
+  done
+  exit 0
+fi
+
+for pane in "${panes[@]}"; do
+  [ "$pane" = "$active" ] || tmux resize-pane -t "$pane" -y 2
+done
+big=$(( $(tmux display -p '#{window_height}') - (${#panes[@]} - 1) * 3 ))
+tmux resize-pane -t "$active" -y "$big"

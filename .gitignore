@@ -1,0 +1,7 @@
+/target
+/web/node_modules
+/web/dist
+/.lavish
+/.claude
+/CONTEXT.md
+/docs

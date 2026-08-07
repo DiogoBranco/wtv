@@ -1,0 +1,21 @@
+{
+  "name": "wtv-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@codemirror/language": "^6",
+    "@codemirror/language-data": "^6",
+    "@codemirror/merge": "^6",
+    "@codemirror/state": "^6",
+    "@codemirror/theme-one-dark": "^6",
+    "@codemirror/view": "^6"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}

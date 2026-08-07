@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session="${WTV_SESSION:-work}"
+
+if [ -n "${TMUX:-}" ]; then
+  for name in "$@"; do
+    workmux open "$name"
+  done
+  exit 0
+fi
+
+root="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs -r dirname)"
+tmux has-session -t "$session" 2>/dev/null \
+  || tmux new-session -d -s "$session" -c "${root:-$PWD}"
+
+for name in "$@"; do
+  tmux send-keys -t "$session:^" -l "workmux open $name"
+  tmux send-keys -t "$session:^" Enter
+  sleep 1
+done
+
+if [ -t 0 ]; then
+  exec tmux attach -t "$session"
+else
+  echo "session $session ready"
+fi

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wtv</title>
+</head>
+<body>
+  <div id="topbar">
+    <select id="worktree-select"></select>
+    <button id="mode-browse" class="mode active">Browse</button>
+    <button id="mode-diff" class="mode">Diff</button>
+    <select id="base-select" hidden></select>
+    <span class="spacer"></span>
+    <span id="status"></span>
+    <input type="color" id="accent-picker" title="Accent color">
+  </div>
+  <form id="prompt" hidden>
+    <input id="question" type="text" autocomplete="off" placeholder="Ask about this code">
+    <select id="agent"><option value="claude">claude</option><option value="codex">codex</option></select>
+    <button type="submit">send</button>
+  </form>
+  <div id="layout">
+    <aside id="sidebar"></aside>
+    <main id="content"></main>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
