@@ -446,7 +446,44 @@ pub fn send_to_pane(pane: &str, text: &str) -> Result<(), String> {
         .ok_or_else(|| "could not reach the shell pane".into())
 }
 
+fn available(command: &str) -> bool {
+    let Some(program) = command.split_whitespace().next() else { return false };
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {program} >/dev/null 2>&1"))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn split_pane(target: &str, vertical: bool, worktree: &Path, size: Option<u16>, command: Option<&str>) -> Option<String> {
+    let mut tmux = Command::new("tmux");
+    tmux.args(["split-window", "-d", "-P", "-F", "#{pane_id}"]);
+    tmux.arg(if vertical { "-v" } else { "-h" });
+    tmux.args(["-t", target, "-c"]).arg(worktree);
+    if let Some(size) = size {
+        tmux.args(["-l", &size.to_string()]);
+    }
+    if let Some(command) = command {
+        tmux.arg(command);
+    }
+    let output = tmux.output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub struct WindowSync {
+    pub shell: Option<String>,
+    pub started: Vec<String>,
+}
+
 pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<Option<String>, String> {
+    sync_window(worktree, claude, codex, false).map(|sync| sync.shell)
+}
+
+pub fn sync_window(worktree: &Path, claude: &str, codex: &str, create_missing: bool) -> Result<WindowSync, String> {
     let own = std::env::var("TMUX_PANE").map_err(|_| "not inside tmux")?;
     let output = Command::new("tmux")
         .args(["list-panes", "-t", &own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
@@ -455,7 +492,12 @@ pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<Opt
     if !output.status.success() {
         return Err("tmux failed".into());
     }
+    let resume_claude = format!("{claude} --continue || exec {claude}");
+    let resume_codex = format!("{codex} resume --last || exec {codex}");
     let mut shell = None;
+    let mut has_claude = false;
+    let mut has_codex = false;
+    let mut last = own.clone();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 3 || fields[0] == own {
@@ -466,15 +508,18 @@ pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<Opt
         let front = executable(fields[2]).to_string();
         commands.insert(front.clone());
         let respawn = if commands.contains("claude") {
-            Some(format!("{claude} --continue || exec {claude}"))
+            has_claude = true;
+            Some(resume_claude.clone())
         } else if commands.contains("codex") {
-            Some(format!("{codex} resume --last || exec {codex}"))
+            has_codex = true;
+            Some(resume_codex.clone())
         } else if matches!(front.as_str(), "bash" | "zsh" | "sh" | "fish") && commands.len() == 1 {
             shell = Some(fields[0].to_string());
             None
         } else {
             continue;
         };
+        last = fields[0].to_string();
         let mut command = Command::new("tmux");
         command.args(["respawn-pane", "-k", "-t", fields[0], "-c"]).arg(worktree);
         if let Some(respawn) = respawn {
@@ -482,7 +527,34 @@ pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<Opt
         }
         let _ = command.status();
     }
-    Ok(shell)
+    let mut started = Vec::new();
+    if create_missing {
+        for (name, missing, command) in [
+            ("claude", !has_claude, &resume_claude),
+            ("codex", !has_codex, &resume_codex),
+        ] {
+            if !missing {
+                continue;
+            }
+            let program = if name == "claude" { claude } else { codex };
+            if !available(program) {
+                continue;
+            }
+            let vertical = last != own;
+            if let Some(pane) = split_pane(&last, vertical, worktree, None, Some(command)) {
+                last = pane;
+                started.push(name.to_string());
+            }
+        }
+        if shell.is_none() {
+            let vertical = last != own;
+            shell = split_pane(&last, vertical, worktree, Some(8), None);
+            if shell.is_some() {
+                started.push("shell".to_string());
+            }
+        }
+    }
+    Ok(WindowSync { shell, started })
 }
 
 fn configured_worktree_dir(config: &str) -> Option<String> {

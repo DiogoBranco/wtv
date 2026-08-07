@@ -41,8 +41,13 @@ window.
 
 - Rust (to build) — `rustup` from https://rustup.rs
 - git 2.5+ (worktree support)
-- tmux, only for the "ask the agent" and pane-switching features
+- tmux, only for the agent features (asking, switching, opening panes)
+- Claude Code and/or Codex — whichever you have. wtv uses the ones it finds and
+  ignores the ones it does not.
 - Node, only if you also want the optional browser UI
+
+Nothing else is required. [workmux](https://workmux.raine.dev) is supported but
+optional — see [Layout](#layout).
 
 ## Install
 
@@ -93,18 +98,30 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | `v` then `j` `k` | select lines; `h` / `l` choose the base or updated side |
 | `y` | copy the selection to the system clipboard |
 | `a` | ask about the cursor line or selection; `Tab` picks claude or codex |
+| `A` | open the agent panes — builds the layout, or brings back one you closed |
 | `[` `]` | resize the sidebar; `{` `}` move the diff divider |
 | `q` | quit |
 
 The mouse works too: click to move, drag to select, drag a border to resize,
 right-click to ask.
 
-## The three-pane layout
+## Layout
 
-wtv assumes nothing about your layout, but it is built for one: the viewer on the
-left, an agent above another agent on the right, a shell at the bottom. With
-[workmux](https://workmux.raine.dev) you get that per worktree — put this in
-`.workmux.yaml` in your repo, or in `~/.config/workmux/config.yaml` for all repos:
+The layout is the viewer on the left, an agent above another agent on the right,
+and a shell at the bottom. You do not have to build it yourself.
+
+**Press `A`** inside wtv and it opens whatever is missing: run wtv alone in a tmux
+window and `A` gives you the full layout; close the codex pane by accident and `A`
+brings it back, resuming that worktree's session. It only opens agents you actually
+have installed — with Claude Code but no Codex, you get wtv, claude and a shell.
+
+Everything below is optional.
+
+### A window per worktree, with workmux
+
+If you use [workmux](https://workmux.raine.dev), it can create the layout for every
+worktree window it opens. Put this in `.workmux.yaml` in your repo, or in
+`~/.config/workmux/config.yaml` for all repos:
 
 ```yaml
 panes:
@@ -126,6 +143,8 @@ session and opens the worktrees you name.
 current window to it, and runs the repo's `post_create` hooks in the shell pane, so
 a new tree is provisioned the same way workmux would provision it. Use `workmux add`
 when you want a separate window per branch.
+
+### Stacked panes
 
 `scripts/wtv-stack` adds zellij-style pane stacking, if you bind it:
 

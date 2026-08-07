@@ -513,6 +513,21 @@ impl App {
         }
     }
 
+    fn sync_agents(&mut self) {
+        let wt = self.worktree_path();
+        match core::sync_window(&wt, &self.config.claude, &self.config.codex, true) {
+            Ok(sync) => {
+                self.shell_pane = sync.shell;
+                self.status = if sync.started.is_empty() {
+                    "agent panes already open".to_string()
+                } else {
+                    format!("started {}", sync.started.join(" and "))
+                };
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
     fn create_worktree(&mut self) {
         let Some(branch) = self.new_branch.take() else { return };
         let Some(repo) = self.repos.get(self.repo_index).map(|r| PathBuf::from(&r.repo)) else { return };
@@ -621,6 +636,7 @@ impl App {
             KeyCode::Char('d') => self.toggle_mode(),
             KeyCode::Char('w') => { self.popup = Some(Popup::Worktree); self.popup_index = 0; },
             KeyCode::Char('n') => self.new_branch = Some(String::new()),
+            KeyCode::Char('A') => self.sync_agents(),
             KeyCode::Char('b') if self.mode == Mode::Diff => { self.popup = Some(Popup::Base); self.popup_index = self.base.as_ref().and_then(|b| self.branches.iter().position(|v| v == b)).unwrap_or(0); },
             KeyCode::Char('a') => self.ask(),
             KeyCode::Char('[') => self.sidebar_width = self.sidebar_width.saturating_sub(2).max(20),
@@ -909,7 +925,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(content_block, body[1]);
     render_sidebar(frame, app, sidebar_inner);
     render_content(frame, &mut *app, content_inner);
-    let status = if let Some(name) = &app.new_branch { format!("New branch: {name}") } else if let Some(prompt) = &app.prompt { format!("Ask {} [{}] {}", prompt.lines, ["claude", "codex"][prompt.agent], prompt.text) } else if app.status.is_empty() { "q quit · d mode · w worktree · n new · b base · v select · y copy · a ask".into() } else { app.status.clone() };
+    let status = if let Some(name) = &app.new_branch { format!("New branch: {name}") } else if let Some(prompt) = &app.prompt { format!("Ask {} [{}] {}", prompt.lines, ["claude", "codex"][prompt.agent], prompt.text) } else if app.status.is_empty() { "q quit · d mode · w worktree · n new · b base · v select · y copy · a ask · A panes".into() } else { app.status.clone() };
     let status_style = if app.prompt.is_some() || app.new_branch.is_some() { Style::default().fg(app.accent) } else { Style::default().fg(Color::DarkGray) };
     frame.render_widget(Paragraph::new(status).style(status_style), vertical[1]);
     render_popup(frame, app, frame.area());
