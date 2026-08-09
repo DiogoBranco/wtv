@@ -74,7 +74,12 @@ attaches you to it. Run it again later and it attaches to the same session.
 Quitting wtv with `q` tears the whole session down — every pane in it, including the
 agents. One `q` ends the working session instead of leaving orphaned agent panes
 holding ports and `next dev` locks. Detaching (`C-b d`) leaves everything running,
-as usual.
+as usual. wtv does this itself, when started as `wtv --panes --close-session`;
+started any other way it leaves your session alone.
+
+Each terminal gets its own view of the shared session, so two tabs can sit in two
+different worktrees. Without that they are two clients of one session and share an
+active window, so switching worktree in one tab drags the other along.
 
 Add worktree names to open one window each:
 

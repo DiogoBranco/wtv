@@ -99,6 +99,8 @@ struct App {
     popup_index: usize,
     held: HashMap<PathBuf, String>,
     pulls: Vec<core::PullRequest>,
+    status_shown: String,
+    status_at: Instant,
     prompt: Option<Prompt>,
     new_branch: Option<String>,
     shell_pane: Option<String>,
@@ -285,7 +287,8 @@ impl App {
             base: None, branches: Vec::new(), paths: Vec::new(), changed: Vec::new(), nodes: Vec::new(),
             open_dirs: HashSet::new(), selected: 0, active_path: None, content: Vec::new(), highlighted: Vec::new(), old_highlighted: Vec::new(), new_highlighted: Vec::new(),
             diff_rows: Vec::new(), expanded: HashSet::new(), scroll: 0, cursor: 0, anchor: None, visual: false, select_side: Side::New, view_height: 0, view_width: 0, row_map: Vec::new(), rendered_rows: 0, sidebar_width: 34, split_pct: 50, dragging: None, horizontal: 0, accent,
-            status: String::new(), popup: None, popup_index: 0, held: HashMap::new(), pulls: Vec::new(), prompt: None, new_branch: None, shell_pane: None, watcher: None,
+            status: String::new(), popup: None, popup_index: 0, held: HashMap::new(), pulls: Vec::new(),
+            status_shown: String::new(), status_at: Instant::now(), prompt: None, new_branch: None, shell_pane: None, watcher: None,
             watch_rx: None, dirty_since: None, syntax_set: SyntaxSet::load_defaults_newlines(),
             theme: wtv_theme(), quit: false,
         };
@@ -979,7 +982,13 @@ fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(content_block, body[1]);
     render_sidebar(frame, app, sidebar_inner);
     render_content(frame, &mut *app, content_inner);
-    let status = if let Some(name) = &app.new_branch { format!("New branch: {name}") } else if let Some(prompt) = &app.prompt { format!("Ask {} [{}] {}", prompt.lines, ["claude", "codex"][prompt.agent], prompt.text) } else if app.status.is_empty() { "q quit · d mode · w worktree · n new · b base · v select · y copy · a ask · A panes".into() } else { app.status.clone() };
+    // A status set at startup used to sit there forever, hiding the key hints.
+    if app.status != app.status_shown {
+        app.status_shown = app.status.clone();
+        app.status_at = Instant::now();
+    }
+    let faded = app.status_at.elapsed() > Duration::from_secs(6);
+    let status = if let Some(name) = &app.new_branch { format!("New branch: {name}") } else if let Some(prompt) = &app.prompt { format!("Ask {} [{}] {}", prompt.lines, ["claude", "codex"][prompt.agent], prompt.text) } else if app.status.is_empty() || faded { "q quit · d mode · w worktree · n new · b base · v select · y copy · a ask · A panes".into() } else { app.status.clone() };
     let status_style = if app.prompt.is_some() || app.new_branch.is_some() { Style::default().fg(app.accent) } else { Style::default().fg(Color::DarkGray) };
     frame.render_widget(Paragraph::new(status).style(status_style), vertical[1]);
     render_popup(frame, app, frame.area());
@@ -1013,12 +1022,16 @@ fn start() -> Result<(), String> {
     let invocation = core::parse_args(std::env::args())?;
     let config = core::load_config(Path::new(&invocation.config))?;
     match invocation.command {
-        core::Action::View { panes } => {
+        core::Action::View { panes, close_session } => {
             let mut app = App::new(config)?;
             if panes {
                 app.sync_agents();
             }
-            run(app).map_err(|e| e.to_string())
+            let result = run(app).map_err(|e| e.to_string());
+            if close_session {
+                core::close_session();
+            }
+            result
         }
         core::Action::Say { agent, text } => {
             println!("{}", relay::say(&config, &agent, &text)?);

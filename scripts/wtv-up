@@ -2,7 +2,29 @@
 set -euo pipefail
 
 session="${WTV_SESSION:-work}"
-panes='wtv --panes; tmux kill-session -t "$TMUX_PANE"'
+panes='wtv --panes --close-session'
+
+# Each terminal gets its own session grouped onto the shared one: the windows are
+# the same, but the active-window pointer is per client, so two tabs can sit in
+# different worktrees instead of dragging each other around. The view dies with
+# the client; the shared session outlives it.
+attach() {
+  if [ ! -t 0 ]; then
+    echo "session $session ready"
+    return 0
+  fi
+  # Views left behind by terminals that died without detaching cleanly.
+  tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null \
+    | awk -v prefix="$session-" '$1 ~ "^"prefix && $2 == 0 {print $1}' \
+    | while read -r stale; do tmux kill-session -t "$stale" 2>/dev/null || true; done
+  local view="$session-$$"
+  # destroy-unattached is set by the attaching command, never before it: setting it
+  # on a session with no client destroys that session immediately.
+  if tmux new-session -d -t "$session" -s "$view" 2>/dev/null; then
+    exec tmux attach -t "$view" \; set-option destroy-unattached on
+  fi
+  exec tmux attach -t "$session"
+}
 
 open_worktree() {
   local target="$1"
@@ -16,7 +38,7 @@ open_worktree() {
 
 if [ -n "${TMUX:-}" ]; then
   if [ "$#" -eq 0 ]; then
-    exec sh -c "$panes"
+    exec wtv --panes --close-session
   fi
   for name in "$@"; do
     open_worktree "$name"
@@ -41,8 +63,4 @@ for name in "$@"; do
   sleep 1
 done
 
-if [ -t 0 ]; then
-  exec tmux attach -t "$session"
-else
-  echo "session $session ready"
-fi
+attach

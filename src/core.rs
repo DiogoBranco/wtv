@@ -64,7 +64,7 @@ pub fn default_accent() -> String {
 }
 
 pub enum Action {
-    View { panes: bool },
+    View { panes: bool, close_session: bool },
     Say { agent: String, text: String },
     Ask { agent: String, text: String, fresh: bool },
 }
@@ -82,13 +82,15 @@ const USAGE: &str = "wtv — worktree viewer
   wtv ask <claude|codex> <text>    ask that agent and print its reply
                                    (--new starts a fresh discussion)
 
-  --config <path>                  config file (default ~/.config/wtv/config.toml)";
+  --config <path>                  config file (default ~/.config/wtv/config.toml)
+  --close-session                  quitting the viewer kills its whole tmux session";
 
 pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, String> {
     let mut args = args.skip(1).peekable();
     let mut config = None;
     let mut fresh = false;
     let mut panes = false;
+    let mut close_session = false;
     let mut verb = None;
     let mut rest: Vec<String> = Vec::new();
     while let Some(arg) = args.next() {
@@ -96,6 +98,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
             "--config" => config = Some(PathBuf::from(args.next().ok_or("--config requires a path")?)),
             "--new" => fresh = true,
             "--panes" => panes = true,
+            "--close-session" => close_session = true,
             "-h" | "--help" => return Err(USAGE.to_string()),
             "say" | "ask" if verb.is_none() => verb = Some(arg),
             _ if verb.is_some() => rest.push(arg),
@@ -106,7 +109,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/wtv/config.toml")
     });
     let command = match verb.as_deref() {
-        None => Action::View { panes },
+        None => Action::View { panes, close_session },
         Some(verb) => {
             let mut rest = rest.into_iter();
             let agent = rest.next().ok_or_else(|| format!("{verb} needs an agent: claude or codex\n\n{USAGE}"))?;
@@ -445,6 +448,13 @@ pub fn my_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, String> {
         return Err(reason.trim().to_string());
     }
     serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
+pub fn close_session() {
+    // Targeting the pane resolves to the session that owns its window, so this
+    // ends the session the viewer is in without naming it.
+    let Ok(pane) = std::env::var("TMUX_PANE") else { return };
+    let _ = Command::new("tmux").args(["kill-session", "-t", &pane]).status();
 }
 
 pub fn worktree_holders() -> HashMap<PathBuf, String> {
