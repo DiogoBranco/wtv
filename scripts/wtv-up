@@ -2,6 +2,7 @@
 set -euo pipefail
 
 session="${WTV_SESSION:-work}"
+panes='wtv --panes; tmux kill-session -t "$TMUX_PANE"'
 
 open_worktree() {
   local target="$1"
@@ -10,12 +11,12 @@ open_worktree() {
   fi
   local path="$target"
   [ -d "$path" ] || path="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-  tmux new-window -t "$session" -c "$path" -n "$(basename "$path")" "wtv --panes"
+  tmux new-window -t "$session" -c "$path" -n "$(basename "$path")" "$panes"
 }
 
 if [ -n "${TMUX:-}" ]; then
   if [ "$#" -eq 0 ]; then
-    exec wtv --panes
+    exec sh -c "$panes"
   fi
   for name in "$@"; do
     open_worktree "$name"
@@ -29,9 +30,9 @@ cols="${COLUMNS:-$(tput cols 2>/dev/null || echo 200)}"
 rows="${LINES:-$(tput lines 2>/dev/null || echo 50)}"
 
 if ! tmux has-session -t "$session" 2>/dev/null; then
-  tmux new-session -d -s "$session" -x "$cols" -y "$rows" -c "$start" -n "$(basename "$start")" "wtv --panes"
+  tmux new-session -d -s "$session" -x "$cols" -y "$rows" -c "$start" -n "$(basename "$start")" "$panes"
 elif [ "$#" -eq 0 ]; then
-  tmux new-window -t "$session" -c "$start" -n "$(basename "$start")" "wtv --panes"
+  tmux new-window -t "$session" -c "$start" -n "$(basename "$start")" "$panes"
 fi
 
 for name in "$@"; do

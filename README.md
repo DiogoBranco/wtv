@@ -71,6 +71,11 @@ That is the whole cold start. It creates the tmux session, builds the layout —
 viewer left, claude and codex stacked on the right, a shell at the bottom — and
 attaches you to it. Run it again later and it attaches to the same session.
 
+Quitting wtv with `q` tears the whole session down — every pane in it, including the
+agents. One `q` ends the working session instead of leaving orphaned agent panes
+holding ports and `next dev` locks. Detaching (`C-b d`) leaves everything running,
+as usual.
+
 Add worktree names to open one window each:
 
 ```sh
@@ -192,24 +197,82 @@ caller's pane as it happens, so you can interrupt whenever you have heard enough
 
 Messages carry their origin (`[from claude] …`), taken from the calling pane rather
 than the sender's word for it. Three things keep this from running away: a message
-that is already tagged cannot be forwarded again, exchanges are rate limited per
-worktree, and you can always interrupt the caller.
+that is already tagged cannot be forwarded again, `ask` is capped at 12 exchanges
+per agent per 15 minutes in a worktree, and you can always interrupt the caller.
+
+Note the cap applies to `ask` only — **`say` has no rate limit.** Two agents that
+each answer the other's answer will keep going until something runs out, so tell
+them to reply once rather than to hold a conversation.
 
 Every `ask` discussion is written to a markdown transcript outside the worktree, at
 `~/.local/share/wtv/<worktree>/<date>-<topic>.md`, and the path is printed with each
 reply — so afterwards you can tell either agent "re-read the argument and implement
 the option that won".
 
-To let them use it, add one line to each agent's instructions:
+To let them use it, add this to each agent's instructions — both halves, or a `say`
+never comes back:
 
 ```md
 To get a second opinion from the other agent in this worktree, run
 `wtv ask codex "<question>"` (or `wtv ask claude`). It prints the reply.
 Use `wtv say <agent> "<message>"` to send something without waiting.
+
+When text prefixed `[from …]` appears in your pane, that is the other agent asking
+you directly. Do the work, then send your answer back to its pane with
+`wtv say <that agent> "<answer>"`. Reply once, then stop.
 ```
 
-Claude Code will ask permission for the command until you allowlist `wtv` in
-`~/.claude/settings.json`.
+Claude Code will ask permission for the command until you allowlist it in
+`~/.claude/settings.json`:
+
+```json
+{ "permissions": { "allow": ["Bash(wtv ask:*)", "Bash(wtv say:*)"] } }
+```
+
+### Codex needs its sandbox opened
+
+Codex sandboxes the commands it runs, and the sandbox blocks **both** things wtv
+needs to find a pane:
+
+```
+error connecting to /private/tmp/tmux-501/default (Operation not permitted)
+zsh:1: operation not permitted: ps
+```
+
+The symptom is misleading — codex runs the command, wtv starts, `tmux list-panes` is
+denied, and you get `no claude pane found for this worktree` while the pane is
+plainly on screen. The same command from your own shell works, which makes it look
+like wtv is at fault.
+
+There is no narrow fix: adding the socket directory to `sandbox_workspace_write.writable_roots`
+leaves both restrictions in place, and `ps` is needed whenever the pane's process
+name is not literally `claude` or `codex` — which is the case for Claude Code's
+versioned binary (`~/.local/bin/claude` → `…/versions/2.1.226`). Only full access
+works:
+
+```toml
+# ~/.codex/config.toml
+sandbox_mode = "danger-full-access"
+```
+
+Confirm with `codex doctor` — it should report `filesystem sandbox: unrestricted`.
+
+**Weigh this before you set it.** It removes sandboxing from every command codex
+runs, anywhere on disk, not just the wtv ones.
+
+`ask` is not a way around it. The sandbox also blocks network, so a sandboxed codex
+cannot run the other agent either:
+
+```
+example.com  unsandboxed → 200
+example.com  sandboxed   → 000
+```
+
+So while codex is sandboxed it cannot start an exchange at all, in either shape.
+Claude → codex still works throughout, because claude is the one running the
+command and it is not sandboxed. If you would rather leave codex sandboxed, keep
+the traffic one-way: claude sends with `say`, then reads the answer out of codex's
+pane itself with `tmux capture-pane -p -t <pane>`.
 
 ## How the agent link works
 
