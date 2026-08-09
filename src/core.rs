@@ -406,6 +406,84 @@ fn pane_commands(root: u32) -> HashSet<String> {
     found
 }
 
+#[derive(Deserialize, Clone)]
+pub struct PullRequest {
+    pub number: u64,
+    #[serde(rename = "headRefName")]
+    pub branch: String,
+    pub title: String,
+    #[serde(rename = "reviewDecision")]
+    pub review: Option<String>,
+    #[serde(rename = "isDraft")]
+    pub draft: bool,
+}
+
+impl PullRequest {
+    pub fn label(&self) -> String {
+        let state = match (self.draft, self.review.as_deref()) {
+            (true, _) => "draft",
+            (false, Some("APPROVED")) => "approved",
+            (false, Some("CHANGES_REQUESTED")) => "changes requested",
+            (false, _) => "open",
+        };
+        format!("#{}  {}  · {state}", self.number, self.branch)
+    }
+}
+
+pub fn my_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, String> {
+    let output = Command::new("gh")
+        .current_dir(repo)
+        .args([
+            "pr", "list", "--author", "@me", "--limit", "30", "--json",
+            "number,headRefName,title,reviewDecision,isDraft",
+        ])
+        .output()
+        .map_err(|_| "gh not found — install the GitHub CLI to list your pull requests".to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh pr list failed");
+        return Err(reason.trim().to_string());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
+pub fn worktree_holders() -> HashMap<PathBuf, String> {
+    let mut held = HashMap::new();
+    // A wtv pane's own cwd stays wherever it started, so it cannot say which
+    // worktree it is viewing. Its retargeted agent panes can: they sit at the
+    // worktree path. Panes in our own window are ours, not a competing session.
+    let own_window = std::env::var("TMUX_PANE").ok().and_then(|pane| {
+        let out = Command::new("tmux")
+            .args(["display-message", "-p", "-t", &pane, "#{window_id}"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    });
+    let Some(output) = Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{window_id}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{session_name}:#{window_index}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    else {
+        return held;
+    };
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 5 || own_window.as_deref() == Some(fields[0]) {
+            continue;
+        }
+        let Ok(path) = std::fs::canonicalize(fields[1]) else { continue };
+        let Ok(pid) = fields[3].parse() else { continue };
+        let mut names = pane_commands(pid);
+        names.insert(executable(fields[2]).to_string());
+        if ["claude", "codex", "wtv"].iter().any(|a| names.contains(*a)) {
+            held.entry(path).or_insert_with(|| fields[4].to_string());
+        }
+    }
+    held
+}
+
 fn find_pane(worktree: &Path, agent: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}"])
@@ -661,13 +739,23 @@ pub fn create_worktree(repo: &Path, branch: &str) -> Result<PathBuf, String> {
     }
     let dir = worktree_dir(repo).join(branch.replace('/', "-"));
     let refs = branch_refs(repo);
-    let base = default_branch(repo, &refs).unwrap_or_else(|| "HEAD".to_string());
+    let remote = format!("origin/{branch}");
+    let path = dir.display().to_string();
+    // `-b` creates a branch, so it fails on a name that already exists locally and
+    // would silently produce an empty branch off the base for one that exists only
+    // on the remote. Check first and check out what is already there.
+    let args: Vec<String> = if refs.iter().any(|r| r == branch) {
+        vec!["worktree".into(), "add".into(), path, branch.into()]
+    } else if refs.contains(&remote) {
+        vec!["worktree".into(), "add".into(), "--track".into(), "-b".into(), branch.into(), path, remote]
+    } else {
+        let base = default_branch(repo, &refs).unwrap_or_else(|| "HEAD".to_string());
+        vec!["worktree".into(), "add".into(), "-b".into(), branch.into(), path, base]
+    };
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["worktree", "add", "-b", branch])
-        .arg(&dir)
-        .arg(&base)
+        .args(&args)
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {

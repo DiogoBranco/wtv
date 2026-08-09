@@ -45,7 +45,7 @@ enum DiffRow {
     Fold { old_start: usize, new_start: usize, count: usize },
 }
 
-enum Popup { Worktree, Base }
+enum Popup { Worktree, Base, PullRequest }
 
 #[derive(Clone, Copy)]
 enum Drag { Sidebar, Split }
@@ -97,6 +97,8 @@ struct App {
     status: String,
     popup: Option<Popup>,
     popup_index: usize,
+    held: HashMap<PathBuf, String>,
+    pulls: Vec<core::PullRequest>,
     prompt: Option<Prompt>,
     new_branch: Option<String>,
     shell_pane: Option<String>,
@@ -283,7 +285,7 @@ impl App {
             base: None, branches: Vec::new(), paths: Vec::new(), changed: Vec::new(), nodes: Vec::new(),
             open_dirs: HashSet::new(), selected: 0, active_path: None, content: Vec::new(), highlighted: Vec::new(), old_highlighted: Vec::new(), new_highlighted: Vec::new(),
             diff_rows: Vec::new(), expanded: HashSet::new(), scroll: 0, cursor: 0, anchor: None, visual: false, select_side: Side::New, view_height: 0, view_width: 0, row_map: Vec::new(), rendered_rows: 0, sidebar_width: 34, split_pct: 50, dragging: None, horizontal: 0, accent,
-            status: String::new(), popup: None, popup_index: 0, prompt: None, new_branch: None, shell_pane: None, watcher: None,
+            status: String::new(), popup: None, popup_index: 0, held: HashMap::new(), pulls: Vec::new(), prompt: None, new_branch: None, shell_pane: None, watcher: None,
             watch_rx: None, dirty_since: None, syntax_set: SyntaxSet::load_defaults_newlines(),
             theme: wtv_theme(), quit: false,
         };
@@ -529,6 +531,19 @@ impl App {
         }
     }
 
+    fn open_pull_requests(&mut self) {
+        let Some(repo) = self.repos.get(self.repo_index).map(|r| PathBuf::from(&r.repo)) else { return };
+        match core::my_pull_requests(&repo) {
+            Ok(pulls) if pulls.is_empty() => self.status = "no open pull requests of yours".into(),
+            Ok(pulls) => {
+                self.pulls = pulls;
+                self.popup = Some(Popup::PullRequest);
+                self.popup_index = 0;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
     fn create_worktree(&mut self) {
         let Some(branch) = self.new_branch.take() else { return };
         let Some(repo) = self.repos.get(self.repo_index).map(|r| PathBuf::from(&r.repo)) else { return };
@@ -569,8 +584,16 @@ impl App {
         }
     }
 
-    fn popup_entries(&self) -> Vec<(usize, usize, String)> {
-        self.repos.iter().enumerate().flat_map(|(ri, repo)| repo.worktrees.iter().enumerate().map(move |(wi, wt)| (ri, wi, format!("{}  {}", repo.name, wt.branch.as_deref().unwrap_or(&wt.path))))).collect()
+    fn popup_entries(&self) -> Vec<(usize, usize, String, Option<String>)> {
+        let mut entries = Vec::new();
+        for (ri, repo) in self.repos.iter().enumerate() {
+            for (wi, wt) in repo.worktrees.iter().enumerate() {
+                let name = wt.branch.as_deref().unwrap_or(&wt.path);
+                let holder = self.held.get(Path::new(&wt.path)).cloned();
+                entries.push((ri, wi, format!("{}  {}", repo.name, name), holder));
+            }
+        }
+        entries
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -596,7 +619,7 @@ impl App {
             return;
         }
         if self.popup.is_some() {
-            let len = match self.popup { Some(Popup::Worktree) => self.popup_entries().len(), Some(Popup::Base) => self.branches.len(), None => 0 };
+            let len = match self.popup { Some(Popup::Worktree) => self.popup_entries().len() + 2, Some(Popup::Base) => self.branches.len(), Some(Popup::PullRequest) => self.pulls.len(), None => 0 };
             match key.code {
                 KeyCode::Esc => self.popup = None,
                 KeyCode::Up | KeyCode::Char('k') => self.popup_index = self.popup_index.saturating_sub(1),
@@ -604,7 +627,22 @@ impl App {
                 KeyCode::Enter => {
                     match self.popup.take() {
                         Some(Popup::Worktree) => {
-                            let target = self.popup_entries().get(self.popup_index).map(|(ri, wi, _)| (*ri, *wi));
+                            let entries = self.popup_entries();
+                            if self.popup_index == entries.len() {
+                                self.new_branch = Some(String::new());
+                                return;
+                            }
+                            if self.popup_index > entries.len() {
+                                self.open_pull_requests();
+                                return;
+                            }
+                            let entry = entries.get(self.popup_index).cloned();
+                            if let Some((_, _, _, Some(holder))) = &entry {
+                                self.status = format!("already open in {holder} — close it there first");
+                                self.popup = Some(Popup::Worktree);
+                                return;
+                            }
+                            let target = entry.map(|(ri, wi, _, _)| (ri, wi));
                             if let Some((ri, wi)) = target {
                                 if (ri, wi) != (self.repo_index, self.worktree_index) {
                                     self.repo_index = ri;
@@ -614,6 +652,10 @@ impl App {
                             }
                         }
                         Some(Popup::Base) => if let Some(base) = self.branches.get(self.popup_index).cloned() { self.base = Some(base); self.active_path = None; if let Err(e) = self.refresh() { self.status = e; } },
+                        Some(Popup::PullRequest) => if let Some(pr) = self.pulls.get(self.popup_index).cloned() {
+                            self.new_branch = Some(pr.branch);
+                            self.create_worktree();
+                        },
                         None => {}
                     }
                 }
@@ -635,7 +677,7 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => if self.focus == Focus::Sidebar { self.activate(true) } else if self.mode == Mode::Browse { self.horizontal += 4 } else { self.select_side = Side::New },
             KeyCode::Enter => if self.focus == Focus::Sidebar { self.activate(true) } else if let Some(DiffRow::Fold { old_start, new_start, .. }) = self.diff_rows.get(self.cursor) { self.expanded.insert((*old_start, *new_start)); let (scroll, cursor) = (self.scroll, self.cursor); if let Some(path) = self.active_path.clone() { let _ = self.open(&path); } self.scroll = scroll; self.cursor = cursor; },
             KeyCode::Char('d') => self.toggle_mode(),
-            KeyCode::Char('w') => { self.popup = Some(Popup::Worktree); self.popup_index = 0; },
+            KeyCode::Char('w') => { self.held = core::worktree_holders(); self.popup = Some(Popup::Worktree); self.popup_index = 0; },
             KeyCode::Char('n') => self.new_branch = Some(String::new()),
             KeyCode::Char('A') => self.sync_agents(),
             KeyCode::Char('b') if self.mode == Mode::Diff => { self.popup = Some(Popup::Base); self.popup_index = self.base.as_ref().and_then(|b| self.branches.iter().position(|v| v == b)).unwrap_or(0); },
@@ -886,13 +928,24 @@ fn centered(width: u16, height: u16, area: Rect) -> Rect {
 
 fn render_popup(frame: &mut Frame, app: &App, area: Rect) {
     let Some(popup) = &app.popup else { return };
-    let (title, entries): (&str, Vec<String>) = match popup {
-        Popup::Worktree => (" Worktrees ", app.popup_entries().into_iter().map(|v| v.2).collect()),
-        Popup::Base => (" Base ", app.branches.clone()),
+    let (title, mut entries): (&str, Vec<(String, Option<String>)>) = match popup {
+        Popup::Worktree => (" Worktrees ", app.popup_entries().into_iter().map(|v| (v.2, v.3)).collect()),
+        Popup::Base => (" Base ", app.branches.iter().map(|b| (b.clone(), None)).collect()),
+        Popup::PullRequest => (" My pull requests ", app.pulls.iter().map(|p| (p.label(), None)).collect()),
     };
+    if matches!(popup, Popup::Worktree) {
+        entries.push(("+  new worktree".to_string(), None));
+        entries.push(("↓  from my pull requests".to_string(), None));
+    }
     let popup_area = centered(70, 60, area);
     frame.render_widget(Clear, popup_area);
-    let items: Vec<ListItem> = entries.into_iter().map(ListItem::new).collect();
+    let items: Vec<ListItem> = entries
+        .into_iter()
+        .map(|(label, holder)| match holder {
+            Some(holder) => ListItem::new(format!("{label}  · {holder}")).style(Style::default().fg(Color::Rgb(88, 96, 105))),
+            None => ListItem::new(label),
+        })
+        .collect();
     let mut state = ListState::default().with_selected(Some(app.popup_index));
     frame.render_stateful_widget(List::new(items).block(Block::bordered().border_type(BorderType::Rounded).title(title).border_style(Style::default().fg(app.accent))).highlight_style(Style::default().fg(app.accent).add_modifier(Modifier::BOLD)), popup_area, &mut state);
 }

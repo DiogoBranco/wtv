@@ -110,7 +110,9 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | Key | Action |
 | --- | --- |
 | `w` | worktree picker (switching also retargets the agent panes) |
-| `n` | new worktree — type a branch name, it is created from your default branch |
+| | a worktree already open elsewhere is greyed out and cannot be picked |
+| | ends with `+ new worktree` and `↓ from my pull requests` |
+| `n` | new worktree — type a branch name; same as `+` in the picker |
 | | (any `post_create` hooks in `.workmux.yaml` run in the shell pane) |
 | `d` | switch between Browse and Diff |
 | `b` | pick the diff base (for stacked PRs) |
@@ -125,6 +127,52 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 
 The mouse works too: click to move, drag to select, drag a border to resize,
 right-click to ask.
+
+## Getting a worktree
+
+The picker ends with two ways to add one.
+
+**`+ new worktree`** takes a name. What it does depends on what already exists:
+
+| The name is | What you get |
+| --- | --- |
+| new | a new branch off your default branch |
+| an existing local branch | that branch checked out |
+| only on the remote | a local branch tracking `origin/<name>` |
+
+So the same box both starts work and pulls down work that already exists. It never
+recreates a name you already have, and never leaves you on an empty branch that
+merely shares a name with the remote one.
+
+**`↓ from my pull requests`** lists your open PRs for that repo, newest first, each
+with its review state:
+
+```
+#3771  feat/aq-search-cost-convergence  · approved
+#3887  feat/dev-1582-structural-chunk-metadata  · draft
+```
+
+Pick one and you get a worktree on its branch. This is the quick path back into a
+review on a machine that has none of your worktrees yet. It shells out to `gh`, so
+you need the GitHub CLI logged in; without it the row reports that and nothing else
+changes.
+
+## Only one session per worktree
+
+Two wtv instances on the same worktree fight over the same agent panes — `find_pane`
+matches on path, across every tmux session, so `say`, `ask` and the `a` key can land
+in the other instance's claude. The picker therefore greys out any worktree that is
+already in use and refuses to select it, naming the holder:
+
+```
+spot-platform  research/dev-1578-chunking-answer-quality  · work:1
+→ already open in work:1 — close it there first
+```
+
+"In use" means a pane at that worktree path is running claude, codex or wtv, in a
+tmux window other than yours. Detached sessions count — their panes are still live
+and still collide. Nothing is written to disk to track this, so a crashed session
+releases its worktree by itself.
 
 ## Layout
 
