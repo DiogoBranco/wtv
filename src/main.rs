@@ -1022,14 +1022,14 @@ fn start() -> Result<(), String> {
     let invocation = core::parse_args(std::env::args())?;
     let config = core::load_config(Path::new(&invocation.config))?;
     match invocation.command {
-        core::Action::View { panes, close_session } => {
+        core::Action::View { panes, close_window } => {
             let mut app = App::new(config)?;
             if panes {
                 app.sync_agents();
             }
             let result = run(app).map_err(|e| e.to_string());
-            if close_session {
-                core::close_session();
+            if close_window {
+                core::close_window();
             }
             result
         }

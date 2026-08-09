@@ -2,7 +2,7 @@
 set -euo pipefail
 
 session="${WTV_SESSION:-work}"
-panes='wtv --panes --close-session'
+panes='wtv --panes --close-window'
 
 # Each terminal gets its own session grouped onto the shared one: the windows are
 # the same, but the active-window pointer is per client, so two tabs can sit in
@@ -38,7 +38,7 @@ open_worktree() {
 
 if [ -n "${TMUX:-}" ]; then
   if [ "$#" -eq 0 ]; then
-    exec wtv --panes --close-session
+    exec wtv --panes --close-window
   fi
   for name in "$@"; do
     open_worktree "$name"

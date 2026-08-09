@@ -71,11 +71,14 @@ That is the whole cold start. It creates the tmux session, builds the layout —
 viewer left, claude and codex stacked on the right, a shell at the bottom — and
 attaches you to it. Run it again later and it attaches to the same session.
 
-Quitting wtv with `q` tears the whole session down — every pane in it, including the
-agents. One `q` ends the working session instead of leaving orphaned agent panes
-holding ports and `next dev` locks. Detaching (`C-b d`) leaves everything running,
-as usual. wtv does this itself, when started as `wtv --panes --close-session`;
-started any other way it leaves your session alone.
+Quitting wtv with `q` closes its window and every pane in it, agents included, so
+one `q` ends that worktree instead of leaving orphaned panes holding ports and
+`next dev` locks. Other worktrees are sibling windows and keep running; quit the
+last one and tmux ends the session, so the final `q` still closes everything.
+Detaching (`C-b d`) leaves it all running, as usual.
+
+wtv does this itself, when started as `wtv --panes --close-window`. Started any
+other way it leaves your windows alone.
 
 Each terminal gets its own view of the shared session, so two tabs can sit in two
 different worktrees. Without that they are two clients of one session and share an
