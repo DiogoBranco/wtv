@@ -98,7 +98,9 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
             "--config" => config = Some(PathBuf::from(args.next().ok_or("--config requires a path")?)),
             "--new" => fresh = true,
             "--panes" => panes = true,
-            "--close-window" => close_window = true,
+            // --close-session is the old name. Panes created before the rename still
+            // carry it in their command, and rejecting it kills the viewer at startup.
+            "--close-window" | "--close-session" => close_window = true,
             "-h" | "--help" => return Err(USAGE.to_string()),
             "say" | "ask" if verb.is_none() => verb = Some(arg),
             _ if verb.is_some() => rest.push(arg),
