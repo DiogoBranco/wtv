@@ -146,6 +146,7 @@ The picker ends with two ways to add one.
 | new | a new branch off your default branch |
 | an existing local branch | that branch checked out |
 | only on the remote | a local branch tracking `origin/<name>` |
+| already in a worktree | that worktree's workspace, switched to |
 
 So the same box both starts work and pulls down work that already exists. It never
 recreates a name you already have, and never leaves you on an empty branch that

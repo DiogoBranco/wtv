@@ -237,6 +237,16 @@ pub fn repo_worktrees(config: &Config) -> Vec<RepoWorktrees> {
         .collect()
 }
 
+pub fn worktree_for_branch(repo: &Path, branch: &str) -> Option<PathBuf> {
+    let output = git(repo, &["worktree", "list", "--porcelain"])?;
+    let mut path: Option<PathBuf> = None;
+    for line in output.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") { path = Some(PathBuf::from(p)); }
+        if line.strip_prefix("branch refs/heads/") == Some(branch) { return path; }
+    }
+    None
+}
+
 pub fn validate_worktree(config: &Config, worktree: &Path) -> Result<PathBuf, &'static str> {
     let known: HashSet<PathBuf> = config
         .repos

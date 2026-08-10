@@ -580,6 +580,15 @@ impl App {
     fn create_worktree(&mut self) {
         let Some(branch) = self.new_branch.take() else { return };
         let Some(repo) = self.repos.get(self.repo_index).map(|r| PathBuf::from(&r.repo)) else { return };
+        if let Some(path) = core::worktree_for_branch(&repo, &branch) {
+            self.status = match core::ensure_session(&path, &self.config.claude, &self.config.codex)
+                .and_then(|session| core::switch_to(&session))
+            {
+                Ok(()) => format!("opened {branch}"),
+                Err(e) => e,
+            };
+            return;
+        }
         match core::create_worktree(&repo, &branch) {
             Ok(path) => {
                 let session = match core::ensure_session(&path, &self.config.claude, &self.config.codex) {
@@ -623,6 +632,21 @@ impl App {
             }
         }
         entries
+    }
+
+    fn reload_repos(&mut self) {
+        let current = self.worktree_path();
+        let repos = core::repo_worktrees(&self.config);
+        for (ri, repo) in repos.iter().enumerate() {
+            for (wi, wt) in repo.worktrees.iter().enumerate() {
+                if Path::new(&wt.path) == current {
+                    self.repos = repos;
+                    self.repo_index = ri;
+                    self.worktree_index = wi;
+                    return;
+                }
+            }
+        }
     }
 
     fn popup_len(&self) -> usize {
@@ -709,7 +733,7 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => if self.focus == Focus::Sidebar { self.activate() } else if self.mode == Mode::Browse { self.horizontal += 4 } else { self.select_side = Side::New },
             KeyCode::Enter => if self.focus == Focus::Sidebar { self.activate() } else if let Some(DiffRow::Fold { old_start, new_start, .. }) = self.diff_rows.get(self.cursor) { self.expanded.insert((*old_start, *new_start)); let (scroll, cursor) = (self.scroll, self.cursor); if let Some(path) = self.active_path.clone() { let _ = self.open(&path); } self.scroll = scroll; self.cursor = cursor; },
             KeyCode::Char('d') => self.toggle_mode(),
-            KeyCode::Char('w') => { self.open_worktrees = core::session_worktrees(); self.popup = Some(Popup::Worktree); self.popup_index = 0; },
+            KeyCode::Char('w') => { self.reload_repos(); self.open_worktrees = core::session_worktrees(); self.popup = Some(Popup::Worktree); self.popup_index = 0; },
             KeyCode::Char('n') => self.new_branch = Some(String::new()),
             KeyCode::Char('r') => self.fetch_and_refresh(),
             KeyCode::Char('A') => self.sync_agents(),
