@@ -31,8 +31,10 @@ window.
   where you can keep talking to it.
 - **Switching brings the agents with you.** Change worktree and wtv switches to
   that worktree's workspace, with its own agent panes and shell.
-- **It cannot break your code.** wtv never writes to a worktree. It reads files,
-  runs read-only git commands, and writes only its own config.
+- **It cannot break your code.** wtv never writes to a worktree and never touches
+  a local branch. It reads files, runs read-only git commands, and writes only its
+  own config — the one exception is `r`, which fetches, updating remote-tracking
+  refs under `.git`.
 - **Shared machines stay sane.** Only worktrees owned by your user are listed, so
   a repo shared with colleagues shows you your own trees.
 
@@ -116,6 +118,7 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | | ends with `+ new worktree` and `↓ from my pull requests` |
 | `n` | new worktree — type a branch name; same as `+` in the picker |
 | | (any `post_create` hooks in `.workmux.yaml` run in the shell pane) |
+| `r` | fetch, then recompute the diff against the refreshed base |
 | `d` | switch between Browse and Diff |
 | `b` | pick the diff base (for stacked PRs) |
 | `j` `k` / arrows | move; `Tab` switches between tree and code |
@@ -158,6 +161,18 @@ Pick one and you get a worktree on its branch. This is the quick path back into 
 review on a machine that has none of your worktrees yet. It shells out to `gh`, so
 you need the GitHub CLI logged in; without it the row reports that and nothing else
 changes.
+
+## Keeping the diff honest
+
+The diff base is a remote-tracking ref — `origin/HEAD`, else `origin/main`. Those
+are local mirrors: they move only when something fetches, and nothing here fetches
+on its own. So when a colleague merges to main, your diff keeps using the old
+merge-base until you say otherwise, without any hint that it has aged.
+
+**`r`** is that hint's cure: it fetches, re-reads the refs, re-derives the base if
+the old one has gone away, and recomputes the diff. A base you picked yourself with
+`b` is kept. Nothing fetches in the background — no surprise network calls — so a
+stale base is always exactly one keystroke old.
 
 ## Only one session per worktree
 

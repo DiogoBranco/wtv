@@ -301,6 +301,25 @@ pub fn default_branch(wt: &Path, refs: &[String]) -> Option<String> {
         .map(str::to_string)
 }
 
+pub fn fetch(wt: &Path) -> Result<(), String> {
+    // The base is a remote-tracking ref, so it only moves when something fetches
+    // and nothing else here does. This is the one command that writes, and it
+    // writes refs under .git — never the worktree, never a local branch.
+    let output = command(wt, &["fetch"]).ok_or("cannot run git")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("git fetch failed")
+        .trim()
+        .trim_start_matches("fatal: ")
+        .to_string())
+}
+
 pub fn checked_base(wt: &Path, base: &str) -> Result<String, &'static str> {
     if !branch_refs(wt).iter().any(|r| r == base) {
         return Err("invalid base");

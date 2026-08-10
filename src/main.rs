@@ -318,6 +318,26 @@ impl App {
         self.refresh()
     }
 
+    fn fetch_and_refresh(&mut self) {
+        let wt = self.worktree_path();
+        if let Err(e) = core::fetch(&wt) {
+            self.status = e;
+            return;
+        }
+        self.branches = core::branch_refs(&wt);
+        // Keep a base picked with `b`; only re-derive one that has gone away.
+        if !self.base.as_ref().is_some_and(|b| self.branches.contains(b)) {
+            self.base = core::default_branch(&wt, &self.branches);
+        }
+        self.status = match &self.base {
+            Some(base) => format!("fetched · base {base}"),
+            None => "fetched".to_string(),
+        };
+        if let Err(e) = self.refresh() {
+            self.status = e;
+        }
+    }
+
     fn refresh(&mut self) -> Result<(), String> {
         let wt = self.worktree_path();
         match self.mode {
@@ -670,6 +690,7 @@ impl App {
             KeyCode::Char('d') => self.toggle_mode(),
             KeyCode::Char('w') => { self.open_worktrees = core::session_worktrees(); self.popup = Some(Popup::Worktree); self.popup_index = 0; },
             KeyCode::Char('n') => self.new_branch = Some(String::new()),
+            KeyCode::Char('r') => self.fetch_and_refresh(),
             KeyCode::Char('A') => self.sync_agents(),
             KeyCode::Char('b') if self.mode == Mode::Diff => { self.popup = Some(Popup::Base); self.popup_index = self.base.as_ref().and_then(|b| self.branches.iter().position(|v| v == b)).unwrap_or(0); },
             KeyCode::Char('a') => self.ask(),
@@ -976,7 +997,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         app.status_at = Instant::now();
     }
     let faded = app.status_at.elapsed() > Duration::from_secs(6);
-    let status = if let Some(name) = &app.new_branch { format!("New branch: {name}") } else if let Some(prompt) = &app.prompt { format!("Ask {} [{}] {}", prompt.lines, ["claude", "codex"][prompt.agent], prompt.text) } else if app.status.is_empty() || faded { "q quit · d mode · w worktree · n new · b base · v select · y copy · a ask · A panes".into() } else { app.status.clone() };
+    let status = if let Some(name) = &app.new_branch { format!("New branch: {name}") } else if let Some(prompt) = &app.prompt { format!("Ask {} [{}] {}", prompt.lines, ["claude", "codex"][prompt.agent], prompt.text) } else if app.status.is_empty() || faded { "q quit · d mode · w worktree · n new · r fetch · b base · v select · y copy · a ask · A panes".into() } else { app.status.clone() };
     let status_style = if app.prompt.is_some() || app.new_branch.is_some() { Style::default().fg(app.accent) } else { Style::default().fg(Color::DarkGray) };
     frame.render_widget(Paragraph::new(status).style(status_style), vertical[1]);
     render_popup(frame, app, frame.area());
