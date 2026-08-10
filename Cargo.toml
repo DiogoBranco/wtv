@@ -2,6 +2,10 @@
 name = "wtv"
 version = "0.1.0"
 edition = "2021"
+description = "Read-only git worktree viewer for the terminal, with PR diffs and Claude Code / Codex hand-off"
+license = "MIT"
+repository = "https://github.com/DiogoBranco/wtv"
+readme = "README.md"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }

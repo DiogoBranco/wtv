@@ -42,7 +42,7 @@ window.
 
 - Rust (to build) — `rustup` from https://rustup.rs
 - git 2.5+ (worktree support)
-- tmux, only for the agent features (asking, switching, opening panes)
+- tmux 3.0+ (pane options), only for the agent features (asking, switching, opening panes)
 - Claude Code and/or Codex — whichever you have. wtv uses the ones it finds and
   ignores the ones it does not.
 - Node, only if you also want the optional browser UI
@@ -83,7 +83,7 @@ other way it leaves your windows alone.
 Add worktree names to ensure one workspace for each and attach to the first:
 
 ```sh
-wtv-up dev-1579-multipass-doc-enrichment dev-1577-eval-search-latency-cost
+wtv-up feat-payment-retries fix-login-redirect
 ```
 
 Just the viewer, no panes:
@@ -154,14 +154,15 @@ merely shares a name with the remote one.
 with its review state:
 
 ```
-#3771  feat/aq-search-cost-convergence  · approved
-#3887  feat/dev-1582-structural-chunk-metadata  · draft
+#482  feat/payment-retries  · approved
+#479  fix/login-redirect    · draft
 ```
 
 Pick one and you get a worktree on its branch. This is the quick path back into a
-review on a machine that has none of your worktrees yet. It shells out to `gh`, so
-you need the GitHub CLI logged in; without it the row reports that and nothing else
-changes.
+review on a machine that has none of your worktrees yet. It shells out to
+`gh pr list --author "@me"`, so "my" means whichever account `gh auth login` is
+signed into — nothing is configured in wtv. Without the GitHub CLI the row reports
+that and nothing else changes.
 
 ## Keeping the diff honest
 
@@ -365,7 +366,9 @@ you want a big screen.
 
 ## Limitations
 
-- Linux and macOS. The owner check and process scan use Unix APIs.
+- Linux and macOS. The owner check and process scan use Unix APIs. Day-to-day
+  development happens on macOS; CI builds and tests on Linux, but the tmux
+  integration is hand-tested on macOS only.
 - Read-only. Editing happens in your editor or your agent.
 - Each worktree workspace keeps its own panes and processes running when you switch
   to another session.

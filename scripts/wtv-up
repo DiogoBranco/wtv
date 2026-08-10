@@ -40,7 +40,14 @@ ensure_session() {
   fi
   local slug hash prefix name
   slug="$(printf %s "$(basename "$path")" | tr -c '[:alnum:]_-' '-')"
-  hash="$(printf %s "$path" | shasum -a 256 | cut -c1-6)"
+  # Not the same hash wtv itself uses (FNV-1a), so the same worktree gets a
+  # different session name depending on who created it. Harmless: identity is
+  # the @wtv_worktree option, never the name.
+  if command -v sha256sum >/dev/null 2>&1; then
+    hash="$(printf %s "$path" | sha256sum | cut -c1-6)"
+  else
+    hash="$(printf %s "$path" | shasum -a 256 | cut -c1-6)"
+  fi
   prefix="${WTV_SESSION:+${WTV_SESSION}-}"
   name="${prefix}${slug}-${hash}"
   tmux new-session -d -s "$name" -c "$path" -n "$slug" "$panes"

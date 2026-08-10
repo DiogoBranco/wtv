@@ -538,7 +538,7 @@ impl App {
         let Some(prompt) = self.prompt.take() else { return };
         let Some(path) = self.active_path.clone() else { return };
         let agent = ["claude", "codex"][prompt.agent];
-        let base = (self.mode == Mode::Diff).then(|| self.base.as_deref()).flatten();
+        let base = (self.mode == Mode::Diff).then_some(self.base.as_deref()).flatten();
         match core::inject(&self.worktree_path(), agent, &path, Some(&prompt.lines), base, &prompt.text) {
             Ok(()) => {
                 self.status = format!("sent to {agent}");
@@ -758,8 +758,7 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => match self.dragging {
                 Some(Drag::Sidebar) => self.sidebar_width = mouse.column.clamp(20, size.width.saturating_sub(40)),
                 Some(Drag::Split) => {
-                    if self.view_width > 0 {
-                        let rel = mouse.column.saturating_sub(sidebar) as usize * 100 / self.view_width;
+                    if let Some(rel) = (mouse.column.saturating_sub(sidebar) as usize * 100).checked_div(self.view_width) {
                         self.split_pct = (rel as u16).clamp(15, 85);
                     }
                 }

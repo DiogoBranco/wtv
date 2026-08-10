@@ -5,7 +5,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -26,7 +26,7 @@ fn status(error: &'static str) -> StatusCode {
     }
 }
 
-async fn validated(app: &App, path: &PathBuf) -> Result<PathBuf, StatusCode> {
+async fn validated(app: &App, path: &Path) -> Result<PathBuf, StatusCode> {
     core::validate_worktree(&*app.config.read().await, path).map_err(status)
 }
 
