@@ -132,7 +132,8 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 
 The mouse works too: the wheel scrolls the code without moving your selection,
 click selects a line, drag selects a range, drag a border to resize, right-click
-to ask.
+to ask. Pickers are clickable as well — click a row to choose it, click outside
+to dismiss.
 
 ## Getting a worktree
 

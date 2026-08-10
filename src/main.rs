@@ -625,6 +625,44 @@ impl App {
         entries
     }
 
+    fn popup_len(&self) -> usize {
+        match self.popup { Some(Popup::Worktree) => self.popup_entries().len() + 2, Some(Popup::Base) => self.branches.len(), Some(Popup::PullRequest) => self.pulls.len(), None => 0 }
+    }
+
+    fn popup_activate(&mut self) {
+        match self.popup.take() {
+            Some(Popup::Worktree) => {
+                let entries = self.popup_entries();
+                if self.popup_index == entries.len() {
+                    self.new_branch = Some(String::new());
+                    return;
+                }
+                if self.popup_index > entries.len() {
+                    self.open_pull_requests();
+                    return;
+                }
+                let entry = entries.get(self.popup_index).cloned();
+                let target = entry.map(|(ri, wi, _, _)| (ri, wi));
+                if let Some(wt) = target
+                    .and_then(|(ri, wi)| self.repos.get(ri)?.worktrees.get(wi))
+                    .map(|wt| PathBuf::from(&wt.path))
+                {
+                    if let Err(e) = core::ensure_session(&wt, &self.config.claude, &self.config.codex)
+                        .and_then(|session| core::switch_to(&session))
+                    {
+                        self.status = e;
+                    }
+                }
+            }
+            Some(Popup::Base) => if let Some(base) = self.branches.get(self.popup_index).cloned() { self.base = Some(base); self.active_path = None; if let Err(e) = self.refresh() { self.status = e; } },
+            Some(Popup::PullRequest) => if let Some(pr) = self.pulls.get(self.popup_index).cloned() {
+                self.new_branch = Some(pr.branch);
+                self.create_worktree();
+            },
+            None => {}
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         if let Some(prompt) = &mut self.prompt {
             match key.code {
@@ -648,44 +686,11 @@ impl App {
             return;
         }
         if self.popup.is_some() {
-            let len = match self.popup { Some(Popup::Worktree) => self.popup_entries().len() + 2, Some(Popup::Base) => self.branches.len(), Some(Popup::PullRequest) => self.pulls.len(), None => 0 };
             match key.code {
                 KeyCode::Esc => self.popup = None,
                 KeyCode::Up | KeyCode::Char('k') => self.popup_index = self.popup_index.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => self.popup_index = (self.popup_index + 1).min(len.saturating_sub(1)),
-                KeyCode::Enter => {
-                    match self.popup.take() {
-                        Some(Popup::Worktree) => {
-                            let entries = self.popup_entries();
-                            if self.popup_index == entries.len() {
-                                self.new_branch = Some(String::new());
-                                return;
-                            }
-                            if self.popup_index > entries.len() {
-                                self.open_pull_requests();
-                                return;
-                            }
-                            let entry = entries.get(self.popup_index).cloned();
-                            let target = entry.map(|(ri, wi, _, _)| (ri, wi));
-                            if let Some(wt) = target
-                                .and_then(|(ri, wi)| self.repos.get(ri)?.worktrees.get(wi))
-                                .map(|wt| PathBuf::from(&wt.path))
-                            {
-                                if let Err(e) = core::ensure_session(&wt, &self.config.claude, &self.config.codex)
-                                    .and_then(|session| core::switch_to(&session))
-                                {
-                                    self.status = e;
-                                }
-                            }
-                        }
-                        Some(Popup::Base) => if let Some(base) = self.branches.get(self.popup_index).cloned() { self.base = Some(base); self.active_path = None; if let Err(e) = self.refresh() { self.status = e; } },
-                        Some(Popup::PullRequest) => if let Some(pr) = self.pulls.get(self.popup_index).cloned() {
-                            self.new_branch = Some(pr.branch);
-                            self.create_worktree();
-                        },
-                        None => {}
-                    }
-                }
+                KeyCode::Down | KeyCode::Char('j') => self.popup_index = (self.popup_index + 1).min(self.popup_len().saturating_sub(1)),
+                KeyCode::Enter => self.popup_activate(),
                 _ => {}
             }
             return;
@@ -731,6 +736,18 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, size: Rect) {
+        if self.popup.is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.popup_index = (self.popup_index + 1).min(self.popup_len().saturating_sub(1)),
+                MouseEventKind::ScrollUp => self.popup_index = self.popup_index.saturating_sub(1),
+                MouseEventKind::Down(MouseButton::Left) => match popup_hit(size, mouse.row, mouse.column, self.popup_len(), self.popup_index) {
+                    Some(index) => { self.popup_index = index; self.popup_activate(); }
+                    None => self.popup = None,
+                },
+                _ => {}
+            }
+            return;
+        }
         let sidebar = self.sidebar_width;
         match mouse.kind {
             MouseEventKind::Up(MouseButton::Left) => self.dragging = None,
@@ -953,6 +970,21 @@ fn centered(width: u16, height: u16, area: Rect) -> Rect {
     Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage((100 - width) / 2), Constraint::Percentage(width), Constraint::Percentage((100 - width) / 2)]).split(v[1])[1]
 }
 
+fn popup_hit(area: Rect, row: u16, column: u16, len: usize, selected: usize) -> Option<usize> {
+    let popup = centered(70, 60, area);
+    let inside = row > popup.y
+        && row < popup.y + popup.height.saturating_sub(1)
+        && column > popup.x
+        && column < popup.x + popup.width.saturating_sub(1);
+    if !inside { return None; }
+    // A fresh ListState is built every frame, so the list's scroll offset is
+    // exactly the minimum that keeps the selection visible.
+    let visible = popup.height.saturating_sub(2) as usize;
+    let offset = selected.saturating_sub(visible.saturating_sub(1));
+    let index = (row - popup.y - 1) as usize + offset;
+    (index < len).then_some(index)
+}
+
 fn render_popup(frame: &mut Frame, app: &App, area: Rect) {
     let Some(popup) = &app.popup else { return };
     let (title, mut entries): (&str, Vec<(String, Option<String>)>) = match popup {
@@ -1097,6 +1129,25 @@ mod tests {
         compress_tree(&tree, "", 0, &HashSet::from(["a/b/c".to_string()]), &HashMap::new(), true, &mut nodes);
         assert!(matches!(&nodes[0], Node::Dir { open: false, .. }));
         assert_eq!(nodes.len(), 2);
+    }
+
+    #[test]
+    fn popup_hit_maps_rows_to_entries() {
+        let area = Rect::new(0, 0, 200, 50);
+        let popup = centered(70, 60, area);
+        assert_eq!(popup_hit(area, popup.y + 1, popup.x + 1, 5, 0), Some(0));
+        assert_eq!(popup_hit(area, popup.y + 3, popup.x + 10, 5, 0), Some(2));
+        assert_eq!(popup_hit(area, popup.y, popup.x + 10, 5, 0), None);
+        assert_eq!(popup_hit(area, 0, 0, 5, 0), None);
+        assert_eq!(popup_hit(area, popup.y + 6, popup.x + 1, 5, 0), None);
+    }
+
+    #[test]
+    fn popup_hit_accounts_for_scroll_offset() {
+        let area = Rect::new(0, 0, 200, 50);
+        let popup = centered(70, 60, area);
+        let visible = popup.height as usize - 2;
+        assert_eq!(popup_hit(area, popup.y + 1, popup.x + 1, 100, visible + 4), Some(5));
     }
 
     #[test]
