@@ -72,6 +72,7 @@ struct App {
     changed: Vec<ChangedFile>,
     nodes: Vec<Node>,
     open_dirs: HashSet<String>,
+    closed_dirs: HashSet<String>,
     selected: usize,
     active_path: Option<String>,
     content: Vec<String>,
@@ -193,7 +194,7 @@ fn wtv_theme() -> Theme {
     theme
 }
 
-fn compress_tree(tree: &Tree, prefix: &str, depth: usize, open: &HashSet<String>, stats: &HashMap<String, (Option<u32>, Option<u32>)>, force_open: bool, out: &mut Vec<Node>) {
+fn compress_tree(tree: &Tree, prefix: &str, depth: usize, toggled: &HashSet<String>, stats: &HashMap<String, (Option<u32>, Option<u32>)>, default_open: bool, out: &mut Vec<Node>) {
     for (name, child) in &tree.dirs {
         let mut label = name.clone();
         let mut path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
@@ -206,9 +207,9 @@ fn compress_tree(tree: &Tree, prefix: &str, depth: usize, open: &HashSet<String>
             path.push_str(next);
             current = next_tree;
         }
-        let is_open = force_open || open.contains(&path);
+        let is_open = default_open != toggled.contains(&path);
         out.push(Node::Dir { label: format!("{label}/"), path: path.clone(), depth, open: is_open });
-        if is_open { compress_tree(current, &path, depth + 1, open, stats, force_open, out); }
+        if is_open { compress_tree(current, &path, depth + 1, toggled, stats, default_open, out); }
     }
     let mut files = tree.files.clone();
     files.sort();
@@ -285,7 +286,7 @@ impl App {
         let mut app = Self {
             config, repos, repo_index, worktree_index, mode: Mode::Browse, focus: Focus::Sidebar,
             base: None, branches: Vec::new(), paths: Vec::new(), changed: Vec::new(), nodes: Vec::new(),
-            open_dirs: HashSet::new(), selected: 0, active_path: None, content: Vec::new(), highlighted: Vec::new(), old_highlighted: Vec::new(), new_highlighted: Vec::new(),
+            open_dirs: HashSet::new(), closed_dirs: HashSet::new(), selected: 0, active_path: None, content: Vec::new(), highlighted: Vec::new(), old_highlighted: Vec::new(), new_highlighted: Vec::new(),
             diff_rows: Vec::new(), expanded: HashSet::new(), scroll: 0, cursor: 0, anchor: None, visual: false, select_side: Side::New, view_height: 0, view_width: 0, row_map: Vec::new(), rendered_rows: 0, sidebar_width: 34, split_pct: 50, dragging: None, horizontal: 0, accent,
             status: String::new(), popup: None, popup_index: 0, open_worktrees: HashSet::new(), pulls: Vec::new(),
             status_shown: String::new(), status_at: Instant::now(), prompt: None, new_branch: None, shell_pane: None, watcher: None,
@@ -308,6 +309,7 @@ impl App {
         self.branches = core::branch_refs(&wt);
         self.base = core::default_branch(&wt, &self.branches);
         self.open_dirs.clear();
+        self.closed_dirs.clear();
         self.active_path = None;
         self.content.clear();
         self.diff_rows.clear();
@@ -369,7 +371,8 @@ impl App {
         for path in &self.paths { tree.insert(path); }
         let stats: HashMap<_, _> = self.changed.iter().map(|f| (f.path.clone(), (f.additions, f.deletions))).collect();
         let mut nodes = Vec::new();
-        compress_tree(&tree, "", 0, &self.open_dirs, &stats, self.mode == Mode::Diff, &mut nodes);
+        let toggled = if self.mode == Mode::Diff { &self.closed_dirs } else { &self.open_dirs };
+        compress_tree(&tree, "", 0, toggled, &stats, self.mode == Mode::Diff, &mut nodes);
         self.nodes = nodes;
     }
 
@@ -405,14 +408,27 @@ impl App {
             .collect()
     }
 
-    fn activate(&mut self, expand: bool) {
+    fn activate(&mut self) {
         let Some(node) = self.nodes.get(self.selected).cloned() else { return };
         match node {
             Node::Dir { path, open, .. } => {
-                if expand && !open { self.open_dirs.insert(path); } else if !expand && open { self.open_dirs.remove(&path); } else if open { self.open_dirs.remove(&path); } else { self.open_dirs.insert(path); }
+                if self.mode == Mode::Diff {
+                    if open { self.closed_dirs.insert(path); } else { self.closed_dirs.remove(&path); }
+                } else if open { self.open_dirs.remove(&path); } else { self.open_dirs.insert(path); }
                 self.rebuild_nodes();
             }
             Node::File { path, .. } => if let Err(e) = self.open(&path) { self.status = e; },
+        }
+    }
+
+    fn wheel(&mut self, amount: isize, sidebar: bool) {
+        if sidebar {
+            self.focus = Focus::Sidebar;
+            self.move_cursor(amount);
+        } else {
+            self.focus = Focus::Content;
+            let len = if self.mode == Mode::Browse { self.content.len() } else { self.diff_rows.len() };
+            self.scroll = self.scroll.saturating_add_signed(amount).min(len.saturating_sub(1));
         }
     }
 
@@ -684,9 +700,9 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::PageDown => self.move_cursor(10),
             KeyCode::PageUp => self.move_cursor(-10),
-            KeyCode::Left | KeyCode::Char('h') => if self.focus == Focus::Sidebar { self.activate(false) } else if self.mode == Mode::Browse { self.horizontal = self.horizontal.saturating_sub(4) } else { self.select_side = Side::Old },
-            KeyCode::Right | KeyCode::Char('l') => if self.focus == Focus::Sidebar { self.activate(true) } else if self.mode == Mode::Browse { self.horizontal += 4 } else { self.select_side = Side::New },
-            KeyCode::Enter => if self.focus == Focus::Sidebar { self.activate(true) } else if let Some(DiffRow::Fold { old_start, new_start, .. }) = self.diff_rows.get(self.cursor) { self.expanded.insert((*old_start, *new_start)); let (scroll, cursor) = (self.scroll, self.cursor); if let Some(path) = self.active_path.clone() { let _ = self.open(&path); } self.scroll = scroll; self.cursor = cursor; },
+            KeyCode::Left | KeyCode::Char('h') => if self.focus == Focus::Sidebar { self.activate() } else if self.mode == Mode::Browse { self.horizontal = self.horizontal.saturating_sub(4) } else { self.select_side = Side::Old },
+            KeyCode::Right | KeyCode::Char('l') => if self.focus == Focus::Sidebar { self.activate() } else if self.mode == Mode::Browse { self.horizontal += 4 } else { self.select_side = Side::New },
+            KeyCode::Enter => if self.focus == Focus::Sidebar { self.activate() } else if let Some(DiffRow::Fold { old_start, new_start, .. }) = self.diff_rows.get(self.cursor) { self.expanded.insert((*old_start, *new_start)); let (scroll, cursor) = (self.scroll, self.cursor); if let Some(path) = self.active_path.clone() { let _ = self.open(&path); } self.scroll = scroll; self.cursor = cursor; },
             KeyCode::Char('d') => self.toggle_mode(),
             KeyCode::Char('w') => { self.open_worktrees = core::session_worktrees(); self.popup = Some(Popup::Worktree); self.popup_index = 0; },
             KeyCode::Char('n') => self.new_branch = Some(String::new()),
@@ -718,8 +734,8 @@ impl App {
         let sidebar = self.sidebar_width;
         match mouse.kind {
             MouseEventKind::Up(MouseButton::Left) => self.dragging = None,
-            MouseEventKind::ScrollDown => { self.focus = if mouse.column < sidebar { Focus::Sidebar } else { Focus::Content }; self.move_cursor(3); }
-            MouseEventKind::ScrollUp => { self.focus = if mouse.column < sidebar { Focus::Sidebar } else { Focus::Content }; self.move_cursor(-3); }
+            MouseEventKind::ScrollDown => self.wheel(3, mouse.column < sidebar),
+            MouseEventKind::ScrollUp => self.wheel(-3, mouse.column < sidebar),
             MouseEventKind::Down(MouseButton::Left) if mouse.row > 0 && mouse.row < size.height.saturating_sub(1) => {
                 if mouse.column + 1 == sidebar || mouse.column == sidebar {
                     self.dragging = Some(Drag::Sidebar);
@@ -728,7 +744,7 @@ impl App {
                 } else if mouse.column < sidebar {
                     self.focus = Focus::Sidebar;
                     self.selected = (mouse.row as usize - 1 + self.selected.saturating_sub((size.height as usize).saturating_sub(3))).min(self.nodes.len().saturating_sub(1));
-                    self.activate(true);
+                    self.activate();
                 } else if let Some(row) = self.clicked_row(mouse.row) {
                     self.focus = Focus::Content;
                     self.visual = false;
@@ -1071,6 +1087,17 @@ mod tests {
         let mut nodes = Vec::new();
         compress_tree(&tree, "", 0, &HashSet::new(), &HashMap::new(), true, &mut nodes);
         assert!(matches!(&nodes[0], Node::Dir { label, .. } if label == "a/b/c/"));
+    }
+
+    #[test]
+    fn toggled_directory_closes_when_default_open() {
+        let mut tree = Tree::default();
+        tree.insert("a/b/c/file.rs");
+        tree.insert("top.rs");
+        let mut nodes = Vec::new();
+        compress_tree(&tree, "", 0, &HashSet::from(["a/b/c".to_string()]), &HashMap::new(), true, &mut nodes);
+        assert!(matches!(&nodes[0], Node::Dir { open: false, .. }));
+        assert_eq!(nodes.len(), 2);
     }
 
     #[test]

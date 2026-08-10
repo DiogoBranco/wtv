@@ -724,7 +724,19 @@ pub fn sync_window(worktree: &Path, claude: &str, codex: &str, create_missing: b
     sync_window_for(&own, worktree, claude, codex, create_missing)
 }
 
+fn set_role(pane: &str, role: &str) {
+    let _ = Command::new("tmux").args(["set-option", "-p", "-t", pane, "@wtv_role", role]).status();
+}
+
 fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create_missing: bool) -> Result<WindowSync, String> {
+    // The agents run under a non-interactive shell, so pane_current_command reports
+    // the shell, not them. The role option names the pane instead.
+    let _ = Command::new("tmux")
+        .args(["set-option", "-w", "-t", own, "pane-border-status", "top"])
+        .status();
+    let _ = Command::new("tmux")
+        .args(["set-option", "-w", "-t", own, "pane-border-format", " #{?#{@wtv_role},#{@wtv_role},#{pane_current_command}} "])
+        .status();
     let output = Command::new("tmux")
         .args(["list-panes", "-t", own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
         .output()
@@ -749,9 +761,11 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
         commands.insert(front.clone());
         let respawn = if commands.contains("claude") {
             has_claude = true;
+            set_role(fields[0], "claude");
             Some(resume_claude.clone())
         } else if commands.contains("codex") {
             has_codex = true;
+            set_role(fields[0], "codex");
             Some(resume_codex.clone())
         } else if matches!(front.as_str(), "bash" | "zsh" | "sh" | "fish") && commands.len() == 1 {
             shell = Some(fields[0].to_string());
@@ -773,6 +787,7 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
         if !has_claude && available(claude) {
             let vertical = last != own;
             if let Some(pane) = split_pane(&last, vertical, worktree, None, Some(&resume_claude)) {
+                set_role(&pane, "claude");
                 last = pane.clone();
                 top = Some(pane);
                 started.push("claude".to_string());
@@ -788,7 +803,8 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
         if !has_codex && available(codex) {
             let target = top.clone().unwrap_or(last);
             let vertical = target != own;
-            if split_pane(&target, vertical, worktree, None, Some(&resume_codex)).is_some() {
+            if let Some(pane) = split_pane(&target, vertical, worktree, None, Some(&resume_codex)) {
+                set_role(&pane, "codex");
                 started.push("codex".to_string());
             }
         }

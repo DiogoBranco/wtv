@@ -122,7 +122,7 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | `d` | switch between Browse and Diff |
 | `b` | pick the diff base (for stacked PRs) |
 | `j` `k` / arrows | move; `Tab` switches between tree and code |
-| `Enter` | open a file, expand a folder, or expand a collapsed diff region |
+| `Enter` | open a file, open or close a folder, or expand a collapsed diff region |
 | `v` then `j` `k` | select lines; `h` / `l` choose the base or updated side |
 | `y` | copy the selection to the system clipboard |
 | `a` | ask about the cursor line or selection; `Tab` picks claude or codex |
@@ -130,8 +130,9 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | `[` `]` | resize the sidebar; `{` `}` move the diff divider |
 | `q` | quit |
 
-The mouse works too: click to move, drag to select, drag a border to resize,
-right-click to ask.
+The mouse works too: the wheel scrolls the code without moving your selection,
+click selects a line, drag selects a range, drag a border to resize, right-click
+to ask.
 
 ## Getting a worktree
 
@@ -185,6 +186,11 @@ second copy or blocking the selection. Detached sessions count and are reused.
 
 The layout is the viewer on the left, an agent above another agent on the right,
 and a shell at the bottom. You do not have to build it yourself.
+
+Each pane carries its name in the border — `claude`, `codex` — so you can tell the
+agents apart at a glance. tmux would otherwise label both panes with the shell that
+launched them (`zsh`). wtv turns border titles on for its own windows only; your
+other windows keep whatever your tmux config says.
 
 **Press `A`** inside wtv and it opens whatever is missing: run wtv alone in a tmux
 window and `A` gives you the full layout; close the codex pane by accident and `A`
@@ -264,7 +270,10 @@ Every `ask` discussion is written to a markdown transcript outside the worktree,
 reply — so afterwards you can tell either agent "re-read the argument and implement
 the option that won".
 
-To let them use it, add this to each agent's instructions — both halves, or a `say`
+The agents do not know these commands exist. You must put them in each agent's
+instruction file — `CLAUDE.md` for Claude Code, `AGENTS.md` for Codex, either in
+the repo or globally (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`). `ask` works
+with just the first half; `say` needs both halves on **both** agents, or a `say`
 never comes back:
 
 ```md
