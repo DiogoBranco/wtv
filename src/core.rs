@@ -64,7 +64,7 @@ pub fn default_accent() -> String {
 }
 
 pub enum Action {
-    View { panes: bool, close_window: bool },
+    View { panes: bool, close_workspace: bool },
     Say { agent: String, text: String },
     Ask { agent: String, text: String, fresh: bool },
 }
@@ -83,14 +83,14 @@ const USAGE: &str = "wtv — worktree viewer
                                    (--new starts a fresh discussion)
 
   --config <path>                  config file (default ~/.config/wtv/config.toml)
-  --close-window                   quitting the viewer closes its tmux window";
+  --close-window                   quitting the viewer closes its tmux workspace";
 
 pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, String> {
     let mut args = args.skip(1).peekable();
     let mut config = None;
     let mut fresh = false;
     let mut panes = false;
-    let mut close_window = false;
+    let mut close_workspace = false;
     let mut verb = None;
     let mut rest: Vec<String> = Vec::new();
     while let Some(arg) = args.next() {
@@ -100,7 +100,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
             "--panes" => panes = true,
             // --close-session is the old name. Panes created before the rename still
             // carry it in their command, and rejecting it kills the viewer at startup.
-            "--close-window" | "--close-session" => close_window = true,
+            "--close-window" | "--close-session" => close_workspace = true,
             "-h" | "--help" => return Err(USAGE.to_string()),
             "say" | "ask" if verb.is_none() => verb = Some(arg),
             _ if verb.is_some() => rest.push(arg),
@@ -111,7 +111,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Invocation, Stri
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/wtv/config.toml")
     });
     let command = match verb.as_deref() {
-        None => Action::View { panes, close_window },
+        None => Action::View { panes, close_workspace },
         Some(verb) => {
             let mut rest = rest.into_iter();
             let agent = rest.next().ok_or_else(|| format!("{verb} needs an agent: claude or codex\n\n{USAGE}"))?;
@@ -452,49 +452,100 @@ pub fn my_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, String> {
     serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
 }
 
-pub fn close_window() {
-    // The window, not the session: other worktrees live in sibling windows of the
-    // same session and must survive. tmux ends the session on its own once the
-    // last window goes, so quitting the only viewer still closes everything.
+pub fn close_workspace() {
     let Ok(pane) = std::env::var("TMUX_PANE") else { return };
-    let _ = Command::new("tmux").args(["kill-window", "-t", &pane]).status();
+    let _ = Command::new("tmux").args(["kill-session", "-t", &pane]).status();
 }
 
-pub fn worktree_holders() -> HashMap<PathBuf, String> {
-    let mut held = HashMap::new();
-    // A wtv pane's own cwd stays wherever it started, so it cannot say which
-    // worktree it is viewing. Its retargeted agent panes can: they sit at the
-    // worktree path. Panes in our own window are ours, not a competing session.
-    let own_window = std::env::var("TMUX_PANE").ok().and_then(|pane| {
-        let out = Command::new("tmux")
-            .args(["display-message", "-p", "-t", &pane, "#{window_id}"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())?;
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+pub fn session_slug(worktree: &Path) -> String {
+    let path = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let name: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') { c } else { '-' }).collect();
+    let hash = path.as_os_str().as_encoded_bytes().iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
     });
+    format!("{name}-{}", &format!("{hash:016x}")[..6])
+}
+
+pub fn worktree_session(worktree: &Path) -> Option<String> {
+    let worktree = std::fs::canonicalize(worktree).ok()?;
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}\t#{@wtv_worktree}"])
+        .output().ok()?;
+    if !output.status.success() { return None; }
+    String::from_utf8_lossy(&output.stdout).lines().find_map(|line| {
+        let (session, path) = line.split_once('\t')?;
+        (std::fs::canonicalize(path).ok().as_ref() == Some(&worktree)).then(|| session.to_string())
+    })
+}
+
+pub fn session_worktrees() -> HashSet<PathBuf> {
     let Some(output) = Command::new("tmux")
-        .args(["list-panes", "-a", "-F", "#{window_id}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{session_name}:#{window_index}"])
+        .args(["list-sessions", "-F", "#{@wtv_worktree}"])
         .output()
         .ok()
         .filter(|o| o.status.success())
     else {
-        return held;
+        return HashSet::new();
     };
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 5 || own_window.as_deref() == Some(fields[0]) {
-            continue;
-        }
-        let Ok(path) = std::fs::canonicalize(fields[1]) else { continue };
-        let Ok(pid) = fields[3].parse() else { continue };
-        let mut names = pane_commands(pid);
-        names.insert(executable(fields[2]).to_string());
-        if ["claude", "codex", "wtv"].iter().any(|a| names.contains(*a)) {
-            held.entry(path).or_insert_with(|| fields[4].to_string());
-        }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .collect()
+}
+
+pub fn ensure_session(worktree: &Path, claude: &str, codex: &str) -> Result<String, String> {
+    let worktree = std::fs::canonicalize(worktree).map_err(|e| e.to_string())?;
+    if let Some(session) = worktree_session(&worktree) { return Ok(session); }
+    let name = session_slug(&worktree);
+    let output = Command::new("tmux")
+        .args(["new-session", "-d", "-P", "-F", "#{pane_id}\t#{session_name}", "-s", &name, "-c"])
+        .arg(&worktree)
+        .output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    held
+    let created = String::from_utf8_lossy(&output.stdout);
+    let (pane, session) = created.trim().split_once('\t').ok_or("tmux returned an invalid session")?;
+    let setup = || -> Result<(), String> {
+        let status = Command::new("tmux")
+            .args(["set-option", "-t", session, "@wtv_worktree"])
+            .arg(&worktree).status().map_err(|e| e.to_string())?;
+        if !status.success() { return Err("tmux failed to tag the session".into()); }
+        sync_window_for(pane, &worktree, claude, codex, true)?;
+        let status = Command::new("tmux")
+            .args(["respawn-pane", "-k", "-t", pane, "-c"])
+            .arg(&worktree).arg("wtv --panes --close-window")
+            .status().map_err(|e| e.to_string())?;
+        status.success().then_some(()).ok_or_else(|| "tmux failed to start wtv".into())
+    }();
+    if let Err(error) = setup {
+        let _ = Command::new("tmux").args(["kill-session", "-t", session]).status();
+        return Err(error);
+    }
+    Ok(session.to_string())
+}
+
+pub fn switch_to(session: &str) -> Result<(), String> {
+    let action = if std::env::var_os("TMUX").is_some() { "switch-client" } else { "attach" };
+    let status = Command::new("tmux").args([action, "-t", session]).status().map_err(|e| e.to_string())?;
+    status.success().then_some(()).ok_or_else(|| format!("tmux {action} failed"))
+}
+
+pub fn session_shell(session: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", session, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
+        .output().ok()?;
+    if !output.status.success() { return None; }
+    String::from_utf8_lossy(&output.stdout).lines().find_map(|line| {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 3 { return None; }
+        let pid = fields[1].parse().ok()?;
+        let mut commands = pane_commands(pid);
+        let front = executable(fields[2]);
+        commands.insert(front.to_string());
+        (matches!(front, "bash" | "zsh" | "sh" | "fish") && commands.len() == 1).then(|| fields[0].to_string())
+    })
 }
 
 fn find_pane(worktree: &Path, agent: &str) -> Option<String> {
@@ -649,14 +700,14 @@ pub struct WindowSync {
     pub started: Vec<String>,
 }
 
-pub fn retarget_window(worktree: &Path, claude: &str, codex: &str) -> Result<Option<String>, String> {
-    sync_window(worktree, claude, codex, false).map(|sync| sync.shell)
-}
-
 pub fn sync_window(worktree: &Path, claude: &str, codex: &str, create_missing: bool) -> Result<WindowSync, String> {
     let own = std::env::var("TMUX_PANE").map_err(|_| "not inside tmux")?;
+    sync_window_for(&own, worktree, claude, codex, create_missing)
+}
+
+fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create_missing: bool) -> Result<WindowSync, String> {
     let output = Command::new("tmux")
-        .args(["list-panes", "-t", &own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
+        .args(["list-panes", "-t", own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -667,7 +718,7 @@ pub fn sync_window(worktree: &Path, claude: &str, codex: &str, create_missing: b
     let mut shell = None;
     let mut has_claude = false;
     let mut has_codex = false;
-    let mut last = own.clone();
+    let mut last = own.to_string();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 3 || fields[0] == own {
@@ -833,9 +884,9 @@ mod tests {
     fn parses_config_flag() {
         let invocation = parse_args(args(&["--config", "/tmp/x"]).into_iter()).unwrap();
         assert_eq!(invocation.config, PathBuf::from("/tmp/x"));
-        assert!(matches!(invocation.command, Action::View { panes: false }));
+        assert!(matches!(invocation.command, Action::View { panes: false, .. }));
         let with_panes = parse_args(args(&["--panes"]).into_iter()).unwrap();
-        assert!(matches!(with_panes.command, Action::View { panes: true }));
+        assert!(matches!(with_panes.command, Action::View { panes: true, .. }));
     }
 
     #[test]

@@ -1,66 +1,76 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-session="${WTV_SESSION:-work}"
 panes='wtv --panes --close-window'
 
-# Each terminal gets its own session grouped onto the shared one: the windows are
-# the same, but the active-window pointer is per client, so two tabs can sit in
-# different worktrees instead of dragging each other around. The view dies with
-# the client; the shared session outlives it.
-attach() {
-  if [ ! -t 0 ]; then
-    echo "session $session ready"
-    return 0
-  fi
-  # Views left behind by terminals that died without detaching cleanly.
-  tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null \
-    | awk -v prefix="$session-" '$1 ~ "^"prefix && $2 == 0 {print $1}' \
-    | while read -r stale; do tmux kill-session -t "$stale" 2>/dev/null || true; done
-  local view="$session-$$"
-  # destroy-unattached is set by the attaching command, never before it: setting it
-  # on a session with no client destroys that session immediately.
-  if tmux new-session -d -t "$session" -s "$view" 2>/dev/null; then
-    exec tmux attach -t "$view" \; set-option destroy-unattached on
-  fi
-  exec tmux attach -t "$session"
-}
-
-open_worktree() {
+resolve_worktree() {
   local target="$1"
-  if command -v workmux >/dev/null 2>&1 && workmux open "$target" 2>/dev/null; then
-    return 0
+  if [ -d "$target" ]; then
+    (cd "$target" && git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+    return
   fi
-  local path="$target"
-  [ -d "$path" ] || path="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-  tmux new-window -t "$session" -c "$path" -n "$(basename "$path")" "$panes"
+  git worktree list --porcelain | awk -v target="$target" '
+    /^worktree / { path = substr($0, 10) }
+    /^branch refs\/heads\// {
+      branch = substr($0, 19)
+      count = split(path, parts, "/")
+      if (branch == target || parts[count] == target) { print path; exit }
+    }
+  '
 }
 
-if [ -n "${TMUX:-}" ]; then
-  if [ "$#" -eq 0 ]; then
-    exec wtv --panes --close-window
+session_for() {
+  local path="$1"
+  # $'' so \t reaches tmux as a real tab: tmux does not expand escapes in formats,
+  # and a literal backslash-t stops read from splitting the fields.
+  tmux list-sessions -F $'#{session_name}\t#{@wtv_worktree}' 2>/dev/null \
+    | while IFS=$'\t' read -r name worktree; do
+        [ -n "$worktree" ] || continue
+        [ "$(cd "$worktree" 2>/dev/null && pwd -P || true)" = "$path" ] && { echo "$name"; break; }
+      done
+}
+
+ensure_session() {
+  local path="$1"
+  local existing
+  existing="$(session_for "$path")"
+  if [ -n "$existing" ]; then
+    echo "$existing"
+    return
   fi
-  for name in "$@"; do
-    open_worktree "$name"
+  local slug hash prefix name
+  slug="$(printf %s "$(basename "$path")" | tr -c '[:alnum:]_-' '-')"
+  hash="$(printf %s "$path" | shasum -a 256 | cut -c1-6)"
+  prefix="${WTV_SESSION:+${WTV_SESSION}-}"
+  name="${prefix}${slug}-${hash}"
+  tmux new-session -d -s "$name" -c "$path" -n "$slug" "$panes"
+  tmux set-option -t "$name" @wtv_worktree "$path"
+  echo "$name"
+}
+
+paths=()
+if [ "$#" -eq 0 ]; then
+  paths+=("$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)")
+else
+  for target in "$@"; do
+    path="$(resolve_worktree "$target")"
+    [ -n "$path" ] || { echo "worktree not found: $target" >&2; exit 1; }
+    paths+=("$(cd "$path" && pwd -P)")
   done
-  exit 0
 fi
 
-start="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-
-cols="${COLUMNS:-$(tput cols 2>/dev/null || echo 200)}"
-rows="${LINES:-$(tput lines 2>/dev/null || echo 50)}"
-
-if ! tmux has-session -t "$session" 2>/dev/null; then
-  tmux new-session -d -s "$session" -x "$cols" -y "$rows" -c "$start" -n "$(basename "$start")" "$panes"
-elif [ "$#" -eq 0 ]; then
-  tmux new-window -t "$session" -c "$start" -n "$(basename "$start")" "$panes"
-fi
-
-for name in "$@"; do
-  tmux send-keys -t "$session:^" -l "wtv-up $name"
-  tmux send-keys -t "$session:^" Enter
-  sleep 1
+first=""
+for path in "${paths[@]}"; do
+  session="$(ensure_session "$path")"
+  [ -n "$first" ] || first="$session"
 done
 
-attach
+# WTV_SESSION prefixes generated names; identity always comes from @wtv_worktree.
+if [ ! -t 0 ]; then
+  echo "session $first ready"
+  exit 0
+fi
+if [ -n "${TMUX:-}" ]; then
+  exec tmux switch-client -t "$first"
+fi
+exec tmux attach -t "$first"

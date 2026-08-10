@@ -29,9 +29,8 @@ window.
   question, and it goes to the Claude or Codex session running in that same
   worktree — the one that knows the work. The answer appears in your terminal,
   where you can keep talking to it.
-- **Switching brings the agents with you.** Change worktree and the agent panes
-  restart there, resuming that worktree's last session, or starting fresh if it
-  has none.
+- **Switching brings the agents with you.** Change worktree and wtv switches to
+  that worktree's workspace, with its own agent panes and shell.
 - **It cannot break your code.** wtv never writes to a worktree. It reads files,
   runs read-only git commands, and writes only its own config.
 - **Shared machines stay sane.** Only worktrees owned by your user are listed, so
@@ -67,24 +66,19 @@ Open a terminal, go to a repo or worktree, and run:
 wtv-up
 ```
 
-That is the whole cold start. It creates the tmux session, builds the layout —
+That is the whole cold start. It creates that worktree's tmux session, builds the layout —
 viewer left, claude and codex stacked on the right, a shell at the bottom — and
 attaches you to it. Run it again later and it attaches to the same session.
 
-Quitting wtv with `q` closes its window and every pane in it, agents included, so
-one `q` ends that worktree instead of leaving orphaned panes holding ports and
-`next dev` locks. Other worktrees are sibling windows and keep running; quit the
-last one and tmux ends the session, so the final `q` still closes everything.
-Detaching (`C-b d`) leaves it all running, as usual.
+There is one tmux session per worktree. Switching worktrees switches sessions, so
+clients in other worktrees do not move. Quitting wtv with `q` closes that workspace
+and every pane in it, agents included; other worktree sessions keep running.
+Detaching (`C-b d`) leaves the workspace running, as usual.
 
 wtv does this itself, when started as `wtv --panes --close-window`. Started any
 other way it leaves your windows alone.
 
-Each terminal gets its own view of the shared session, so two tabs can sit in two
-different worktrees. Without that they are two clients of one session and share an
-active window, so switching worktree in one tab drags the other along.
-
-Add worktree names to open one window each:
+Add worktree names to ensure one workspace for each and attach to the first:
 
 ```sh
 wtv-up dev-1579-multipass-doc-enrichment dev-1577-eval-search-latency-cost
@@ -117,8 +111,8 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 
 | Key | Action |
 | --- | --- |
-| `w` | worktree picker (switching also retargets the agent panes) |
-| | a worktree already open elsewhere is greyed out and cannot be picked |
+| `w` | worktree picker (switching moves to that worktree's session) |
+| | a worktree with a running workspace is marked `· open` and remains selectable |
 | | ends with `+ new worktree` and `↓ from my pull requests` |
 | `n` | new worktree — type a branch name; same as `+` in the picker |
 | | (any `post_create` hooks in `.workmux.yaml` run in the shell pane) |
@@ -167,20 +161,10 @@ changes.
 
 ## Only one session per worktree
 
-Two wtv instances on the same worktree fight over the same agent panes — `find_pane`
-matches on path, across every tmux session, so `say`, `ask` and the `a` key can land
-in the other instance's claude. The picker therefore greys out any worktree that is
-already in use and refuses to select it, naming the holder:
-
-```
-spot-platform  research/dev-1578-chunking-answer-quality  · work:1
-→ already open in work:1 — close it there first
-```
-
-"In use" means a pane at that worktree path is running claude, codex or wtv, in a
-tmux window other than yours. Detached sessions count — their panes are still live
-and still collide. Nothing is written to disk to track this, so a crashed session
-releases its worktree by itself.
+Each worktree has one four-pane tmux workspace. wtv identifies it by the canonical
+worktree path stored on the session, not by the human-readable session name. Picking
+an already-open worktree switches to its existing workspace instead of creating a
+second copy or blocking the selection. Detached sessions count and are reused.
 
 ## Layout
 
@@ -194,7 +178,7 @@ have installed — with Claude Code but no Codex, you get wtv, claude and a shel
 
 Everything below is optional.
 
-### A window per worktree, with workmux
+### Worktree layouts with workmux
 
 If you use [workmux](https://workmux.raine.dev), it can create the layout for every
 worktree window it opens. Put this in `.workmux.yaml` in your repo, or in
@@ -212,12 +196,12 @@ panes:
     size: 8
 ```
 
-Then `workmux add my-branch` (or `workmux open <existing>`) gives you a window per
+Then `workmux add my-branch` (or `workmux open <existing>`) gives you a layout per
 worktree with that layout. `scripts/wtv-up` is a small helper that creates the tmux
-session and opens the worktrees you name.
+sessions for the worktrees you name.
 
-`n` inside wtv is the in-place alternative: it creates the worktree, switches the
-current window to it, and runs the repo's `post_create` hooks in the shell pane, so
+`n` inside wtv is the in-place alternative: it creates the worktree, opens its
+session, and runs the repo's `post_create` hooks in the shell pane, so
 a new tree is provisioned the same way workmux would provision it. Use `workmux add`
 when you want a separate window per branch.
 
@@ -359,10 +343,8 @@ you want a big screen.
 
 - Linux and macOS. The owner check and process scan use Unix APIs.
 - Read-only. Editing happens in your editor or your agent.
-- Switching worktrees restarts the agents in those panes. Their sessions are saved
-  and resume when you switch back, but finish anything mid-flight first.
-- Panes running something other than an agent or an idle shell are left alone, so
-  a dev server or test run survives a worktree switch.
+- Each worktree workspace keeps its own panes and processes running when you switch
+  to another session.
 
 ## License
 
