@@ -452,6 +452,23 @@ pub struct PullRequest {
     pub draft: bool,
 }
 
+#[derive(Deserialize, Clone)]
+pub struct PrBase {
+    pub number: u64,
+    #[serde(rename = "baseRefName")]
+    pub base: String,
+}
+
+pub fn pr_base(wt: &Path, branch: &str) -> Option<PrBase> {
+    let output = Command::new("gh")
+        .current_dir(wt)
+        .args(["pr", "view", branch, "--json", "number,baseRefName"])
+        .output()
+        .ok()?;
+    output.status.success().then_some(())?;
+    serde_json::from_slice(&output.stdout).ok()
+}
+
 impl PullRequest {
     pub fn label(&self) -> String {
         let state = match (self.draft, self.review.as_deref()) {

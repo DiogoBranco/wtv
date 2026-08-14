@@ -120,7 +120,7 @@ Point at a different config with `wtv --config /path/to/config.toml`.
 | | (any `post_create` hooks in `.workmux.yaml` run in the shell pane) |
 | `r` | fetch, then recompute the diff against the refreshed base |
 | `d` | switch between Browse and Diff |
-| `b` | pick the diff base (for stacked PRs) |
+| `b` | pick the diff base — type to filter, arrows to move |
 | `j` `k` / arrows | move; `Tab` switches between tree and code |
 | `Enter` | open a file, open or close a folder, or expand a collapsed diff region |
 | `v` then `j` `k` | select lines; `h` / `l` choose the base or updated side |
@@ -177,6 +177,30 @@ merge-base until you say otherwise, without any hint that it has aged.
 the old one has gone away, and recomputes the diff. A base you picked yourself with
 `b` is kept. Nothing fetches in the background — no surprise network calls — so a
 stale base is always exactly one keystroke old.
+
+### Stacked PRs pick their own base
+
+For a stacked PR, `origin/main` is the wrong base — the reviewer sees your work
+against the branch below yours in the stack. wtv asks GitHub which base the PR
+actually declares (`gh pr view <branch>`) and uses `origin/<that branch>`, showing
+the source in the title so the number is never a guess:
+
+```
+ spotflow-backend/… · base origin/dev-1797-pr1-eval-persistence · PR #3982
+```
+
+It runs in the background, so opening a worktree never blocks on the network, and
+it runs again on every `r` — which is what catches a PR that was retargeted after
+the branch below it merged. Three things stop it from getting in your way: a base
+you chose with `b` always wins, a branch with no open PR keeps the default base,
+and a declared base you have never fetched is ignored until `r` brings it down.
+
+With no `gh` on PATH the whole feature is silently skipped and the default base
+applies, exactly as before.
+
+A caveat this feature cannot fix: it aligns the *base branch* with GitHub, not your
+local mirror of it. If the stack was rebased or force-pushed since your last fetch,
+the file list will not match the reviewer's until you press `r`.
 
 ## Only one session per worktree
 

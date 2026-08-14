@@ -67,6 +67,10 @@ struct App {
     mode: Mode,
     focus: Focus,
     base: Option<String>,
+    base_manual: bool,
+    pr: Option<core::PrBase>,
+    base_rx: Option<Receiver<Option<core::PrBase>>>,
+    filter: String,
     branches: Vec<String>,
     paths: Vec<String>,
     changed: Vec<ChangedFile>,
@@ -285,7 +289,8 @@ impl App {
         let accent = hex_color(&config.accent);
         let mut app = Self {
             config, repos, repo_index, worktree_index, mode: Mode::Browse, focus: Focus::Sidebar,
-            base: None, branches: Vec::new(), paths: Vec::new(), changed: Vec::new(), nodes: Vec::new(),
+            base: None, base_manual: false, pr: None, base_rx: None, filter: String::new(),
+            branches: Vec::new(), paths: Vec::new(), changed: Vec::new(), nodes: Vec::new(),
             open_dirs: HashSet::new(), closed_dirs: HashSet::new(), selected: 0, active_path: None, content: Vec::new(), highlighted: Vec::new(), old_highlighted: Vec::new(), new_highlighted: Vec::new(),
             diff_rows: Vec::new(), expanded: HashSet::new(), scroll: 0, cursor: 0, anchor: None, visual: false, select_side: Side::New, view_height: 0, view_width: 0, row_map: Vec::new(), rendered_rows: 0, sidebar_width: 34, split_pct: 50, dragging: None, horizontal: 0, accent,
             status: String::new(), popup: None, popup_index: 0, open_worktrees: HashSet::new(), pulls: Vec::new(),
@@ -308,6 +313,9 @@ impl App {
         let wt = self.worktree_path();
         self.branches = core::branch_refs(&wt);
         self.base = core::default_branch(&wt, &self.branches);
+        self.base_manual = false;
+        self.pr = None;
+        self.resolve_pr_base();
         self.open_dirs.clear();
         self.closed_dirs.clear();
         self.active_path = None;
@@ -318,6 +326,38 @@ impl App {
         self.watcher = core::watch(&wt, tx).ok();
         self.watch_rx = Some(rx);
         self.refresh()
+    }
+
+    // A PR's declared base is the only authority on what a stacked PR diffs
+    // against, and asking gh costs about a second — too long to block a redraw.
+    fn resolve_pr_base(&mut self) {
+        self.base_rx = None;
+        if self.base_manual { return }
+        let wt = self.worktree_path();
+        let Some(branch) = self.worktree().and_then(|w| w.branch.clone()) else { return };
+        let (tx, rx) = mpsc::channel();
+        self.base_rx = Some(rx);
+        std::thread::spawn(move || { let _ = tx.send(core::pr_base(&wt, &branch)); });
+    }
+
+    fn poll_pr_base(&mut self) {
+        let Some(rx) = &self.base_rx else { return };
+        let Ok(found) = rx.try_recv() else { return };
+        self.base_rx = None;
+        let Some(pr) = found else { return };
+        if self.base_manual { return }
+        let base = format!("origin/{}", pr.base);
+        // Never fetched, so there is nothing to diff against; `r` will find it.
+        if !self.branches.contains(&base) { return }
+        let changed = self.base.as_deref() != Some(base.as_str());
+        let number = pr.number;
+        self.base = Some(base.clone());
+        self.pr = Some(pr);
+        if changed {
+            self.status = format!("base {base} · PR #{number}");
+            self.active_path = None;
+            if let Err(e) = self.refresh() { self.status = e; }
+        }
     }
 
     fn fetch_and_refresh(&mut self) {
@@ -338,6 +378,9 @@ impl App {
         if let Err(e) = self.refresh() {
             self.status = e;
         }
+        // A retargeted PR — the usual outcome when the branch below merges —
+        // only shows up here, so re-ask rather than trusting the first answer.
+        self.resolve_pr_base();
     }
 
     fn refresh(&mut self) -> Result<(), String> {
@@ -649,8 +692,12 @@ impl App {
         }
     }
 
+    fn base_choices(&self) -> Vec<String> {
+        matching(&self.branches, &self.filter)
+    }
+
     fn popup_len(&self) -> usize {
-        match self.popup { Some(Popup::Worktree) => self.popup_entries().len() + 2, Some(Popup::Base) => self.branches.len(), Some(Popup::PullRequest) => self.pulls.len(), None => 0 }
+        match self.popup { Some(Popup::Worktree) => self.popup_entries().len() + 2, Some(Popup::Base) => self.base_choices().len(), Some(Popup::PullRequest) => self.pulls.len(), None => 0 }
     }
 
     fn popup_activate(&mut self) {
@@ -678,7 +725,13 @@ impl App {
                     }
                 }
             }
-            Some(Popup::Base) => if let Some(base) = self.branches.get(self.popup_index).cloned() { self.base = Some(base); self.active_path = None; if let Err(e) = self.refresh() { self.status = e; } },
+            Some(Popup::Base) => if let Some(base) = self.base_choices().get(self.popup_index).cloned() {
+                self.base = Some(base);
+                self.base_manual = true;
+                self.pr = None;
+                self.active_path = None;
+                if let Err(e) = self.refresh() { self.status = e; }
+            },
             Some(Popup::PullRequest) => if let Some(pr) = self.pulls.get(self.popup_index).cloned() {
                 self.new_branch = Some(pr.branch);
                 self.create_worktree();
@@ -710,11 +763,17 @@ impl App {
             return;
         }
         if self.popup.is_some() {
+            // Letters filter the base list, so only the arrows can navigate it.
+            let searchable = matches!(self.popup, Some(Popup::Base));
             match key.code {
                 KeyCode::Esc => self.popup = None,
-                KeyCode::Up | KeyCode::Char('k') => self.popup_index = self.popup_index.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => self.popup_index = (self.popup_index + 1).min(self.popup_len().saturating_sub(1)),
+                KeyCode::Up => self.popup_index = self.popup_index.saturating_sub(1),
+                KeyCode::Down => self.popup_index = (self.popup_index + 1).min(self.popup_len().saturating_sub(1)),
                 KeyCode::Enter => self.popup_activate(),
+                KeyCode::Backspace if searchable => { self.filter.pop(); self.popup_index = 0; }
+                KeyCode::Char(c) if searchable && !key.modifiers.contains(KeyModifiers::CONTROL) => { self.filter.push(c); self.popup_index = 0; }
+                KeyCode::Char('k') => self.popup_index = self.popup_index.saturating_sub(1),
+                KeyCode::Char('j') => self.popup_index = (self.popup_index + 1).min(self.popup_len().saturating_sub(1)),
                 _ => {}
             }
             return;
@@ -737,7 +796,7 @@ impl App {
             KeyCode::Char('n') => self.new_branch = Some(String::new()),
             KeyCode::Char('r') => self.fetch_and_refresh(),
             KeyCode::Char('A') => self.sync_agents(),
-            KeyCode::Char('b') if self.mode == Mode::Diff => { self.popup = Some(Popup::Base); self.popup_index = self.base.as_ref().and_then(|b| self.branches.iter().position(|v| v == b)).unwrap_or(0); },
+            KeyCode::Char('b') if self.mode == Mode::Diff => { self.popup = Some(Popup::Base); self.filter.clear(); self.popup_index = self.base.as_ref().and_then(|b| self.branches.iter().position(|v| v == b)).unwrap_or(0); },
             KeyCode::Char('a') => self.ask(),
             KeyCode::Char('[') => self.sidebar_width = self.sidebar_width.saturating_sub(2).max(20),
             KeyCode::Char(']') => self.sidebar_width += 2,
@@ -994,6 +1053,11 @@ fn centered(width: u16, height: u16, area: Rect) -> Rect {
     Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage((100 - width) / 2), Constraint::Percentage(width), Constraint::Percentage((100 - width) / 2)]).split(v[1])[1]
 }
 
+fn matching(branches: &[String], filter: &str) -> Vec<String> {
+    let needle = filter.to_lowercase();
+    branches.iter().filter(|b| b.to_lowercase().contains(&needle)).cloned().collect()
+}
+
 fn popup_hit(area: Rect, row: u16, column: u16, len: usize, selected: usize) -> Option<usize> {
     let popup = centered(70, 60, area);
     let inside = row > popup.y
@@ -1011,10 +1075,13 @@ fn popup_hit(area: Rect, row: u16, column: u16, len: usize, selected: usize) -> 
 
 fn render_popup(frame: &mut Frame, app: &App, area: Rect) {
     let Some(popup) = &app.popup else { return };
-    let (title, mut entries): (&str, Vec<(String, Option<String>)>) = match popup {
-        Popup::Worktree => (" Worktrees ", app.popup_entries().into_iter().map(|v| (v.2, v.3.then_some("open".to_string()))).collect()),
-        Popup::Base => (" Base ", app.branches.iter().map(|b| (b.clone(), None)).collect()),
-        Popup::PullRequest => (" My pull requests ", app.pulls.iter().map(|p| (p.label(), None)).collect()),
+    let (title, mut entries): (String, Vec<(String, Option<String>)>) = match popup {
+        Popup::Worktree => (" Worktrees ".to_string(), app.popup_entries().into_iter().map(|v| (v.2, v.3.then_some("open".to_string()))).collect()),
+        Popup::Base => (
+            if app.filter.is_empty() { " Base · type to search ".to_string() } else { format!(" Base · {} ", app.filter) },
+            app.base_choices().into_iter().map(|b| (b, None)).collect(),
+        ),
+        Popup::PullRequest => (" My pull requests ".to_string(), app.pulls.iter().map(|p| (p.label(), None)).collect()),
     };
     if matches!(popup, Popup::Worktree) {
         entries.push(("+  new worktree".to_string(), None));
@@ -1041,7 +1108,11 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let title_style = |focused: bool| if focused { Style::default().fg(app.accent) } else { Style::default().fg(Color::Rgb(145, 152, 161)) };
     let repo = app.repos.get(app.repo_index).map(|r| r.name.clone()).unwrap_or_default();
     let branch = app.worktree().and_then(|w| w.branch.clone()).unwrap_or_else(|| "detached".into());
-    let base = app.base.as_deref().unwrap_or("none").to_string();
+    let base = match (app.base.as_deref(), &app.pr) {
+        (Some(b), Some(pr)) => format!("{b} · PR #{}", pr.number),
+        (Some(b), None) => b.to_string(),
+        (None, _) => "none".to_string(),
+    };
     let content_title = match (&app.active_path, app.mode) {
         (Some(path), Mode::Browse) => format!(" {path} "),
         (Some(path), Mode::Diff) => format!(" {path} · base {base} "),
@@ -1082,6 +1153,7 @@ fn run(mut app: App) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let result = loop {
         app.poll_watch();
+        app.poll_pr_base();
         terminal.draw(|frame| draw(frame, &mut app))?;
         if app.quit { break Ok(()); }
         if event::poll(Duration::from_millis(50))? {
@@ -1153,6 +1225,16 @@ mod tests {
         compress_tree(&tree, "", 0, &HashSet::from(["a/b/c".to_string()]), &HashMap::new(), true, &mut nodes);
         assert!(matches!(&nodes[0], Node::Dir { open: false, .. }));
         assert_eq!(nodes.len(), 2);
+    }
+
+    #[test]
+    fn base_filter_is_case_insensitive_and_keeps_order() {
+        let branches: Vec<String> = ["origin/main", "origin/DEV-1797-pr0", "origin/dev-1797-pr1", "origin/feat/x"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(matching(&branches, ""), branches);
+        assert_eq!(matching(&branches, "1797"), vec!["origin/DEV-1797-pr0", "origin/dev-1797-pr1"]);
+        assert_eq!(matching(&branches, "PR1"), vec!["origin/dev-1797-pr1"]);
+        assert!(matching(&branches, "nothing-matches").is_empty());
     }
 
     #[test]
