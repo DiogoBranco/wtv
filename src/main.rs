@@ -661,8 +661,31 @@ impl App {
         if self.dirty_since.is_some_and(|at| at.elapsed() >= Duration::from_millis(150)) {
             if let Some(rx) = &self.watch_rx { while rx.try_recv().is_ok() {} }
             self.dirty_since = None;
+            self.sync_branch();
             if let Err(e) = self.refresh() { self.status = e; }
         }
+    }
+
+    // A review worktree gets repointed at another PR while the viewer keeps
+    // running, so a branch switch has to invalidate the cached branch, base and
+    // PR number rather than diffing the new head against the old PR's base.
+    fn sync_branch(&mut self) {
+        let wt = self.worktree_path();
+        let current = core::current_branch(&wt);
+        if current == self.worktree().and_then(|w| w.branch.clone()) { return }
+        if let Some(w) = self
+            .repos
+            .get_mut(self.repo_index)
+            .and_then(|r| r.worktrees.get_mut(self.worktree_index))
+        {
+            w.branch = current;
+        }
+        self.branches = core::branch_refs(&wt);
+        self.base_manual = false;
+        self.pr = None;
+        self.base = core::default_branch(&wt, &self.branches);
+        self.active_path = None;
+        self.resolve_pr_base();
     }
 
     fn popup_entries(&self) -> Vec<(usize, usize, String, bool)> {

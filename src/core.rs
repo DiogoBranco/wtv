@@ -459,6 +459,10 @@ pub struct PrBase {
     pub base: String,
 }
 
+pub fn current_branch(wt: &Path) -> Option<String> {
+    git(wt, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|v| v.trim().to_string())
+}
+
 pub fn pr_base(wt: &Path, branch: &str) -> Option<PrBase> {
     let output = Command::new("gh")
         .current_dir(wt)
