@@ -759,6 +759,15 @@ fn set_role(pane: &str, role: &str) {
     let _ = Command::new("tmux").args(["set-option", "-p", "-t", pane, "@wtv_role", role]).status();
 }
 
+fn activate_venv(pane: &str, worktree: &Path) {
+    if !worktree.join(".venv/bin/activate").exists() {
+        return;
+    }
+    // Typed into the interactive shell instead of run as the pane's command, so the
+    // rc files load first and the venv keeps the front of PATH.
+    let _ = send_to_pane(pane, ". .venv/bin/activate");
+}
+
 fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create_missing: bool) -> Result<WindowSync, String> {
     // The agents run under a non-interactive shell, so pane_current_command reports
     // the shell, not them. The role option names the pane instead.
@@ -769,7 +778,7 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
         .args(["set-option", "-w", "-t", own, "pane-border-format", " #{?#{@wtv_role},#{@wtv_role},#{pane_current_command}} "])
         .status();
     let output = Command::new("tmux")
-        .args(["list-panes", "-t", own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"])
+        .args(["list-panes", "-t", own, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{@wtv_role}"])
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -783,13 +792,14 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
     let mut last = own.to_string();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 3 || fields[0] == own {
+        if fields.len() != 4 || fields[0] == own {
             continue;
         }
         let Ok(pid) = fields[1].parse() else { continue };
         let mut commands = pane_commands(pid);
         let front = executable(fields[2]).to_string();
         commands.insert(front.clone());
+        let busy = commands.len() > 1;
         let respawn = if commands.contains("claude") {
             has_claude = true;
             set_role(fields[0], "claude");
@@ -798,19 +808,31 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
             has_codex = true;
             set_role(fields[0], "codex");
             Some(resume_codex.clone())
-        } else if matches!(front.as_str(), "bash" | "zsh" | "sh" | "fish") && commands.len() == 1 {
+        } else if fields[3] == "shell"
+            || (matches!(front.as_str(), "bash" | "zsh" | "sh" | "fish") && !busy)
+        {
             shell = Some(fields[0].to_string());
+            set_role(fields[0], "shell");
             None
         } else {
             continue;
         };
         last = fields[0].to_string();
+        // The worktree setup runs in the shell pane, so respawning it while it is
+        // busy would kill the setup half way through.
+        if respawn.is_none() && busy {
+            continue;
+        }
+        let is_shell = respawn.is_none();
         let mut command = Command::new("tmux");
         command.args(["respawn-pane", "-k", "-t", fields[0], "-c"]).arg(worktree);
         if let Some(respawn) = respawn {
             command.arg(respawn);
         }
         let _ = command.status();
+        if is_shell {
+            activate_venv(fields[0], worktree);
+        }
     }
     let mut started = Vec::new();
     if create_missing {
@@ -827,7 +849,9 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
         if shell.is_none() {
             let vertical = last != own;
             shell = split_pane(&last, vertical, worktree, Some(8), None);
-            if shell.is_some() {
+            if let Some(pane) = &shell {
+                set_role(pane, "shell");
+                activate_venv(pane, worktree);
                 started.push("shell".to_string());
             }
         }

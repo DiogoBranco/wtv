@@ -219,6 +219,10 @@ agents apart at a glance. tmux would otherwise label both panes with the shell t
 launched them (`zsh`). wtv turns border titles on for its own windows only; your
 other windows keep whatever your tmux config says.
 
+The shell pane starts inside the project's virtual environment when the worktree
+has a `.venv`, so `pytest` and `python` are the project's from the first command.
+Without one it is a plain shell.
+
 **Press `A`** inside wtv and it opens whatever is missing: run wtv alone in a tmux
 window and `A` gives you the full layout; close the codex pane by accident and `A`
 brings it back, resuming that worktree's session. It only opens agents you actually
