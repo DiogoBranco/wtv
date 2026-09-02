@@ -702,10 +702,7 @@ pub fn inject(worktree: &Path, agent: &str, file: &str, lines: Option<&str>, bas
     let lines = lines.map(|v| format!(":{v}")).unwrap_or_default();
     let base = base.map(|v| format!(" diff against {v}")).unwrap_or_default();
     let prompt = format!("{question} {file}{lines}{base}");
-    let sent = Command::new("tmux").args(["send-keys", "-t", &pane, "-l", "--", &prompt]).status().map(|s| s.success()).unwrap_or(false);
-    if !sent { return Err("injection failed".into()); }
-    std::thread::sleep(Duration::from_millis(80));
-    Command::new("tmux").args(["send-keys", "-t", &pane, "Enter"]).status().map(|s| s.success()).unwrap_or(false).then_some(()).ok_or_else(|| "injection failed".into())
+    paste_to_pane(&pane, &prompt).map_err(|_| "injection failed".to_string())
 }
 
 fn parse_post_create(config: &str) -> Vec<String> {
