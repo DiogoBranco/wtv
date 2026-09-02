@@ -1,9 +1,10 @@
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -626,7 +627,44 @@ pub fn worktree_root() -> Option<PathBuf> {
 pub fn message_pane(worktree: &Path, agent: &str, text: &str) -> Result<(), String> {
     let pane = find_pane(worktree, agent)
         .ok_or_else(|| format!("no {agent} pane found for this worktree"))?;
-    send_to_pane(&pane, text)
+    paste_to_pane(&pane, text)
+}
+
+fn load_argv(buffer: &str) -> Vec<String> {
+    ["load-buffer", "-b", buffer, "-"].iter().map(|a| a.to_string()).collect()
+}
+
+fn paste_argv(pane: &str, buffer: &str) -> Vec<String> {
+    ["paste-buffer", "-p", "-d", "-b", buffer, "-t", pane].iter().map(|a| a.to_string()).collect()
+}
+
+pub fn paste_to_pane(pane: &str, text: &str) -> Result<(), String> {
+    let buffer = format!("wtv-{}", std::process::id());
+    let mut staging = Command::new("tmux")
+        .args(load_argv(&buffer))
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|_| "could not reach the agent pane".to_string())?;
+    staging
+        .stdin
+        .take()
+        .ok_or("could not reach the agent pane")?
+        .write_all(text.as_bytes())
+        .map_err(|_| "could not reach the agent pane".to_string())?;
+    if !staging.wait().map(|s| s.success()).unwrap_or(false) {
+        return Err("could not reach the agent pane".into());
+    }
+    if !Command::new("tmux").args(paste_argv(pane, &buffer)).status().map(|s| s.success()).unwrap_or(false) {
+        return Err("could not reach the agent pane".into());
+    }
+    std::thread::sleep(Duration::from_millis(80));
+    Command::new("tmux")
+        .args(["send-keys", "-t", pane, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+        .then_some(())
+        .ok_or_else(|| "could not reach the agent pane".into())
 }
 
 pub fn calling_agent() -> String {
@@ -965,6 +1003,18 @@ pub fn watch(worktree: &Path, tx: Sender<()>) -> Result<RecommendedWatcher, noti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pastes_agent_messages_with_bracketed_paste() {
+        let argv = paste_argv("%7", "wtv-42");
+        assert_eq!(argv, ["paste-buffer", "-p", "-d", "-b", "wtv-42", "-t", "%7"]);
+    }
+
+    #[test]
+    fn stages_the_message_in_a_named_buffer() {
+        let argv = load_argv("wtv-42");
+        assert_eq!(argv, ["load-buffer", "-b", "wtv-42", "-"]);
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         std::iter::once("wtv").chain(values.iter().copied()).map(str::to_string).collect()
