@@ -803,6 +803,58 @@ fn activate_venv(pane: &str, worktree: &Path) {
     let _ = send_to_pane(pane, ". .venv/bin/activate");
 }
 
+fn valid_thread_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+fn thread_query(worktree: &str) -> String {
+    format!(
+        "SELECT id FROM threads WHERE archived = 0 AND source <> 'exec' AND cwd = '{}' ORDER BY recency_at DESC LIMIT 1;",
+        worktree.replace('\'', "''")
+    )
+}
+
+// codex keeps the store in WAL mode without a readable -shm, so a plain read-only
+// open fails; immutable skips locking at the cost of missing rows still in the WAL.
+fn db_uri(db: &str) -> String {
+    format!("file:{db}?immutable=1")
+}
+
+fn codex_command(codex: &str, thread: Option<&str>) -> String {
+    match thread {
+        Some(id) => format!("{codex} resume {id} || exec {codex}"),
+        None => format!("exec {codex}"),
+    }
+}
+
+// codex has no scriptable session listing, and `resume --last` is scoped to the git
+// repo, so inside a worktree it resumes a sibling worktree's conversation. Its own
+// store is the only place a per-directory thread id exists; any failure here falls
+// back to a fresh session rather than to --last.
+fn codex_thread(worktree: &Path) -> Option<String> {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))?;
+    let db = std::fs::read_dir(&home)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("state_") && name.ends_with(".sqlite"))
+        })
+        .max_by_key(|path| path.metadata().and_then(|meta| meta.modified()).ok())?;
+    let output = Command::new("sqlite3")
+        .arg(db_uri(&db.to_string_lossy()))
+        .arg(thread_query(&worktree.to_string_lossy()))
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    valid_thread_id(&id).then_some(id)
+}
+
 fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create_missing: bool) -> Result<WindowSync, String> {
     // The agents run under a non-interactive shell, so pane_current_command reports
     // the shell, not them. The role option names the pane instead.
@@ -820,7 +872,7 @@ fn sync_window_for(own: &str, worktree: &Path, claude: &str, codex: &str, create
         return Err("tmux failed".into());
     }
     let resume_claude = format!("{claude} --continue || exec {claude}");
-    let resume_codex = format!("{codex} resume --last || exec {codex}");
+    let resume_codex = codex_command(codex, codex_thread(worktree).as_deref());
     let mut shell = None;
     let mut has_claude = false;
     let mut has_codex = false;
@@ -1000,6 +1052,34 @@ pub fn watch(worktree: &Path, tx: Sender<()>) -> Result<RecommendedWatcher, noti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opens_the_codex_store_without_taking_a_lock() {
+        assert_eq!(db_uri("/home/x/.codex/state_5.sqlite"), "file:/home/x/.codex/state_5.sqlite?immutable=1");
+    }
+
+    #[test]
+    fn resumes_the_worktrees_own_thread_never_the_last_one() {
+        assert_eq!(codex_command("codex", Some("01a0-cd74")), "codex resume 01a0-cd74 || exec codex");
+        assert_eq!(codex_command("codex", None), "exec codex");
+        assert!(!codex_command("codex", None).contains("--last"));
+        assert!(!codex_command("codex", Some("01a0")).contains("--last"));
+    }
+
+    #[test]
+    fn rejects_thread_ids_that_are_not_plain_uuids() {
+        assert!(valid_thread_id("01a0cd74-8613-7970-a0db-03fd100c1c7b"));
+        assert!(!valid_thread_id("abc; rm -rf /"));
+        assert!(!valid_thread_id(""));
+    }
+
+    #[test]
+    fn escapes_quotes_when_matching_the_worktree_path() {
+        let query = thread_query("/tmp/it's/wt");
+        assert!(query.contains("cwd = '/tmp/it''s/wt'"));
+        assert!(query.contains("archived = 0"));
+        assert!(query.contains("source <> 'exec'"));
+    }
 
     #[test]
     fn pastes_agent_messages_with_bracketed_paste() {
